@@ -6,6 +6,8 @@ Classical molecular dynamics (MD) simulator for small-molecule mixtures (water, 
 
 - Install: `pip install -e .[dev]`. Tests also run without installing, because `pyproject.toml` adds `src` and `tests` to `pythonpath`.
 - Simulation: `python -m mdsim -c configs/default.toml [-w Water=1 -w Ethanol=1] [--seed N] [--no-show]`.
+  - `configs/quick.toml` (2 nm box, 5 ps, ~1.5 min including the gifs) is the fast end-to-end check.
+  - Without installing, prefix the command with `PYTHONPATH=src`.
   - Without `-c`, the built-in defaults in `config.Config` apply.
   - `configs/default.toml` documents every setting and must match those defaults; `tests/test_config.py` checks this.
 - Tests: `python -m pytest`. `tests/helpers.py` has `make_topology`, `forcefield`, `random_molecule` and `water_ethanol_pair`.
@@ -53,6 +55,8 @@ Key representations:
 - The first step is always Euler (`initial_state` sets `x_prev = x`).
 - Energies are only computed on save steps: `simulation.run` passes a `compute_energy=True` force function to `step` there. `State.KE` is computed once per step, and the thermostat reuses it.
 - All randomness flows from one `np.random.default_rng(config.seed)`.
+
+README.md is user-facing: it documents the config reference, model, output files, performance and limitations. Keep it in sync when settings or outputs change. `docs/images/` holds its figures, made from a `quick.toml` run.
 
 ## Units (internal)
 

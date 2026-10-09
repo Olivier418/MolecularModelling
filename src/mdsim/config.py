@@ -170,7 +170,7 @@ def load_config(path=None, **overrides):
             values["r_cutoff_scalar"] = None
         for name in ("molecule_dir", "output_dir"):
             if name in values:
-                values[name] = path.parent / values[name]
+                values[name] = (path.parent / values[name]).resolve()
 
     values.update(overrides)
     for name in ("molecule_dir", "output_dir"):
