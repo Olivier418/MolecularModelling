@@ -41,16 +41,13 @@ def soft_start(forcefield, x, masses, method, dt, r_threshold_scalar,
     def compute(x):
         return forcefield.compute(x, cap_scalar=r_threshold_scalar)
 
-    sigma = forcefield.sigma_LJ
-    threshold = r_threshold_scalar * sigma
     state, result = initial_state(x, np.zeros_like(x), compute, masses)
-    smallest_dist = np.min(result.D_LJ / sigma, initial=np.inf)
-    total = np.sum(result.D_LJ < threshold)
-    progress = ProgressBar(total)
+    smallest_ratio = result.min_LJ_ratio
+    progress = ProgressBar(1000)
 
     state, result = step(euler, state, compute, masses, dt)
     iteration = 0
-    while np.any(result.D_LJ < threshold):
+    while result.min_LJ_ratio < r_threshold_scalar:
         iteration += 1
         if iteration > max_iterations:
             raise RuntimeError(
@@ -58,11 +55,12 @@ def soft_start(forcefield, x, masses, method, dt, r_threshold_scalar,
                 f"{max_iterations} steps. Lower r_threshold_scalar or check "
                 f"the LJ cutoff.")
         state, result = step(method, state, compute, masses, dt)
-        progress.update(total - np.sum(result.D_LJ < threshold))
+        progress.update(1000 * (result.min_LJ_ratio - smallest_ratio)
+                        / max(r_threshold_scalar - smallest_ratio, 1e-12))
     progress.finish()
     print(f"  Equilibrium configuration initialized. Smallest distance"
-          f"  increased from {smallest_dist:.3f} to "
-          f"{np.min(result.D_LJ / sigma, initial=np.inf):.3f}...")
+          f"  increased from {smallest_ratio:.3f} to "
+          f"{result.min_LJ_ratio:.3f} sigma...")
     return state.x
 
 
@@ -80,8 +78,8 @@ def run(config):
 
     print("Computing simulation parameters...")
     forcefield = ForceField(topology, config.boxsize, config.r_cutoff_scalar,
-                            config.f_threshold)
-    if config.r_threshold_scalar is not None:
+                            config.f_threshold, config.neighbour_skin)
+    if config.r_threshold_scalar is not None and forcefield.has_LJ:
         print("  Computing equilibrium configuration...")
         x = soft_start(forcefield, x, masses, method, dt,
                        config.r_threshold_scalar)
@@ -162,12 +160,14 @@ def run(config):
             progress.update(i)
     progress.finish()
     total_time = time.perf_counter() - start
-    print(f"  Integration took {total_time:.4f} seconds")
+    print(f"  Integration took {total_time:.4f} seconds "
+          f"({forcefield.neighbours.nr_builds} neighbour list builds)")
 
     show = config.show_plots
     if config.RDF_vis:
         print("Generating RDF figures.")
-        rdf_plots(rdf, save_interval, folder / "RDF", topology.r0)
+        rdf_plots(rdf, save_interval, folder / "RDF", topology.r0,
+                  max_frames=config.RDF_gif_frames)
         print("Finished RDF figures.")
     if config.energy_graph:
         energy_plot({**energies, "Kinetic": kinetic}, save_interval, folder,

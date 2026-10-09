@@ -1,59 +1,33 @@
-"""Force field setup (LJ pairs, mixing rules, cutoffs) and evaluation of
-forces and energies. Each term computes its geometry once and returns its
-force contributions per atom, plus its energy when asked."""
+"""Force field setup (LJ mixing rules and cutoffs) and evaluation of forces
+and energies. Each bonded term computes its geometry once and returns its
+force contributions per atom, plus its energy when asked. LJ forces are
+evaluated by a compiled kernel over the pairs of a neighbour list."""
 import time
 from dataclasses import dataclass
-from itertools import permutations
 
 import numpy as np
+from numba import njit
 from scipy.optimize import brentq
 
 from .geometry import (angle_geometry, dihedral_geometry, map_to_bonds,
                        pair_vectors)
+from .neighbours import NeighbourList
 
 
 @dataclass
 class ForceResult:
-    """Forces at a configuration, with the bond and LJ vectors computed on
-    the way (reused for measurements). energies maps each potential energy
-    term to its value if it was requested, else it is None."""
+    """Forces at a configuration, with the bond vectors computed on the way
+    (reused for measurements). energies maps each potential energy term to
+    its value if it was requested, else it is None. min_LJ_ratio is the
+    smallest D / sigma over the LJ pairs in the neighbour list."""
     forces: np.ndarray
     diff_bonds: np.ndarray
     D_bonds: np.ndarray
-    diff_LJ: np.ndarray
-    D_LJ: np.ndarray
+    min_LJ_ratio: float
     energies: dict | None = None
 
 
 # -------------------------------- LJ setup -----------------------------------
-def lj_pairs(topology):
-    """Computes the indices of pairs that experience LJ forces in the system.
-    This excludes 0-epsilon or 0-sigma atoms or atoms that interact through
-    bond/angular/dihedral forces."""
-    t = topology
-    n = t.nr_atoms
-    # Create a mask that excludes the correct intramolecular pairs
-    molec_mask = np.ones((n, n), dtype=bool)
-    # Exclude the bonds (needed for diatomics, which have no angles)
-    molec_mask[t.bonds[:, 0], t.bonds[:, 1]] = False
-    molec_mask[t.bonds[:, 1], t.bonds[:, 0]] = False
-    # Exclude atoms within the same angle or dihedral
-    for group in (t.angles, t.dihedrals):
-        pairs = np.array(list(permutations(range(group.shape[1]), 2)))
-        molec_mask[group[:, pairs[:, 0]], group[:, pairs[:, 1]]] = False
-
-    # Exclude pairs that have zero sigma or zero epsilon
-    sigma_bool = t.sigma > 0
-    eps_bool = t.epsilon > 0
-    LJ_mask = (np.logical_or.outer(sigma_bool, sigma_bool)
-               & np.logical_and.outer(eps_bool, eps_bool) & molec_mask)
-
-    # Find the indices of the resulting mask that are above the main diagonal.
-    i, j = np.triu_indices(n, k=1)
-    keep = LJ_mask[i, j]
-    return i[keep], j[keep]
-
-
 def lj_cutoffs(r_cutoff_scalar, f_threshold, epsilon_LJ, sigma_LJ, boxsize):
     """Calculates the r_cutoff per LJ pair. Assumes that exactly one of
     r_cutoff_scalar and f_threshold is None. If f_threshold is set, r_cutoff
@@ -169,27 +143,47 @@ def dihedral_term(diff_bonds, D_bonds, dihedral_mapping, dihedrals, C,
     return (tuple(dihedrals.T), (fa, -fa - fc - fd, fc, fd), energy)
 
 
-def LJ_term(diff_LJ, D_LJ, epsilon_LJ, sigma_LJ, i_LJ, j_LJ, r_cutoff_LJ,
-            cap, compute_energy):
-    """Lennard-Jones: E = 4 eps ((sig/D)^12 - (sig/D)^6) for pairs within
-    their cutoff. If cap is given, the force at D < cap is the force at cap
-    (used to push overlapping atoms apart gently)."""
-    # Extract relevant data for pairs within the cutoff
-    valid = D_LJ < r_cutoff_LJ
-    D = D_LJ[valid]
-    EPS = epsilon_LJ[valid]
-    SIG = sigma_LJ[valid]
+@njit(cache=True)
+def LJ_kernel(x, i, j, epsilon, sigma, r_cutoff, boxsize, cap_scalar,
+              compute_energy, F):
+    """Lennard-Jones: E = 4 eps ((sig/D)^12 - (sig/D)^6) for the pairs (i, j)
+    within their cutoff, using the minimum image if boxsize != 0. Adds the
+    forces to F and returns the energy (0 unless compute_energy) and the
+    smallest D / sigma. If cap_scalar > 0, the force at D < cap_scalar * sig
+    is the force at that distance (used to push overlapping atoms apart
+    gently)."""
+    inv_boxsize = 1. / boxsize if boxsize != 0. else 0.
+    energy = 0.
+    min_ratio = np.inf
+    for k in range(len(i)):
+        a, b = i[k], j[k]
+        dx = x[a, 0] - x[b, 0]
+        dy = x[a, 1] - x[b, 1]
+        dz = x[a, 2] - x[b, 2]
+        if boxsize != 0.:
+            # Minimum image (floor is much faster than % in compiled code)
+            dx -= boxsize * np.floor(dx * inv_boxsize + 0.5)
+            dy -= boxsize * np.floor(dy * inv_boxsize + 0.5)
+            dz -= boxsize * np.floor(dz * inv_boxsize + 0.5)
+        D = np.sqrt(dx * dx + dy * dy + dz * dz)
+        min_ratio = min(min_ratio, D / sigma[k])
+        if not D < r_cutoff[k]:
+            continue
 
-    D_force = D if cap is None else np.maximum(D, cap[valid])
-    SIGovrD6 = (SIG / D_force)**6
-    F_scalar = 24 * EPS * (2 * SIGovrD6**2 - SIGovrD6) / D_force
-    F = (F_scalar / D_force)[:, None] * diff_LJ[valid]
-
-    energy = None
-    if compute_energy:
-        SIGovrD6 = (SIG / D)**6
-        energy = np.sum(4 * EPS * (SIGovrD6**2 - SIGovrD6))
-    return (i_LJ[valid], j_LJ[valid]), (F, -F), energy
+        D_force = max(D, cap_scalar * sigma[k])
+        SIGovrD6 = (sigma[k] / D_force)**6
+        F_scalar = 24 * epsilon[k] * (2 * SIGovrD6**2 - SIGovrD6) / D_force
+        f = F_scalar / D_force
+        F[a, 0] += f * dx
+        F[a, 1] += f * dy
+        F[a, 2] += f * dz
+        F[b, 0] -= f * dx
+        F[b, 1] -= f * dy
+        F[b, 2] -= f * dz
+        if compute_energy:
+            SIGovrD6 = (sigma[k] / D)**6
+            energy += 4 * epsilon[k] * (SIGovrD6**2 - SIGovrD6)
+    return energy, min_ratio
 
 
 # ------------------------------- Force field ---------------------------------
@@ -198,28 +192,44 @@ class ForceField:
     and evaluates forces and energies at given positions."""
 
     def __init__(self, topology, boxsize, r_cutoff_scalar=None,
-                 f_threshold=None):
+                 f_threshold=None, skin=0.1):
         t = self.topology = topology
         self.boxsize = boxsize
 
-        print("  Computing LJ indices...")
-        self.i_LJ, self.j_LJ = lj_pairs(t)
+        print("  Computing LJ parameters and cutoffs...")
+        # LJ parameters per pair of atom types (unique (epsilon, sigma)),
+        # using the Lorentz-Berthelot mixing rules
+        types, atom_type = np.unique(np.column_stack((t.epsilon, t.sigma)),
+                                     axis=0, return_inverse=True)
+        self.atom_type = atom_type.ravel()
+        eps, sig = types[:, 0], types[:, 1]
+        self.epsilon_table = np.sqrt(eps[:, None] * eps[None, :])
+        self.sigma_table = 0.5 * (sig[:, None] + sig[None, :])
+        self.r_cutoff_table = lj_cutoffs(
+            r_cutoff_scalar, f_threshold, self.epsilon_table.ravel(),
+            self.sigma_table.ravel(), boxsize).reshape(len(types), len(types))
+        interacting = (self.epsilon_table > 0) & (self.sigma_table > 0)
+        max_cutoff = np.max(self.r_cutoff_table[interacting], initial=0.)
+        self.has_LJ = bool(max_cutoff > 0)
 
-        print("  Computing epsilon and sigma...")
-        # Lorentz-Berthelot mixing rules
-        self.sigma_LJ = 0.5 * (t.sigma[self.i_LJ] + t.sigma[self.j_LJ])
-        self.epsilon_LJ = np.sqrt(t.epsilon[self.i_LJ] * t.epsilon[self.j_LJ])
-
-        print("  Computing r_cutoff...")
-        self.r_cutoff_LJ = lj_cutoffs(r_cutoff_scalar, f_threshold,
-                                      self.epsilon_LJ, self.sigma_LJ, boxsize)
+        self.neighbours = NeighbourList(t, boxsize, max_cutoff, skin)
+        self._set_LJ_pairs()
 
         # Map angle and dihedral data to the indices of corresponding bonds
         self.angle_mapping = map_to_bonds(t.angles, t.bonds)
         self.dihedral_mapping = map_to_bonds(t.dihedrals, t.bonds)
 
         # Accumulated computation time (s), for the computation time chart
-        self.timings = {"Diff & Dist": 0., "Forces": 0.}
+        self.timings = {"Bond vectors": 0., "Neighbour list": 0.,
+                        "LJ forces": 0., "Bonded forces": 0.}
+
+    def _set_LJ_pairs(self):
+        """Per-pair LJ parameters for the pairs in the neighbour list."""
+        self.i_LJ, self.j_LJ = self.neighbours.i, self.neighbours.j
+        ti, tj = self.atom_type[self.i_LJ], self.atom_type[self.j_LJ]
+        self.epsilon_LJ = self.epsilon_table[ti, tj]
+        self.sigma_LJ = self.sigma_table[ti, tj]
+        self.r_cutoff_LJ = self.r_cutoff_table[ti, tj]
 
     def compute(self, x, compute_energy=False, cap_scalar=None):
         """Forces at positions x, and the potential energy per term if
@@ -229,34 +239,46 @@ class ForceField:
         t0 = time.perf_counter()
         diff_bonds, D_bonds = pair_vectors(x, t.bonds[:, 0], t.bonds[:, 1],
                                            0.)
-        diff_LJ, D_LJ = pair_vectors(x, self.i_LJ, self.j_LJ, self.boxsize)
         t1 = time.perf_counter()
+        if self.neighbours.update(x):
+            self._set_LJ_pairs()
+        t2 = time.perf_counter()
 
-        cap = None if cap_scalar is None else cap_scalar * self.sigma_LJ
+        F = np.zeros((t.nr_atoms, 3))
+        LJ_energy, min_ratio = LJ_kernel(
+            x, self.i_LJ, self.j_LJ, self.epsilon_LJ, self.sigma_LJ,
+            self.r_cutoff_LJ, float(self.boxsize),
+            -1. if cap_scalar is None else float(cap_scalar),
+            compute_energy, F)
+        t3 = time.perf_counter()
+
         terms = {
             "Bond": bond_term(diff_bonds, D_bonds, t.bonds, t.kb, t.r0,
                               compute_energy),
             "Angular": angle_term(diff_bonds, D_bonds, self.angle_mapping,
                                   t.angles, t.ktheta, t.theta0,
                                   compute_energy),
-            "LJ": LJ_term(diff_LJ, D_LJ, self.epsilon_LJ, self.sigma_LJ,
-                          self.i_LJ, self.j_LJ, self.r_cutoff_LJ, cap,
-                          compute_energy),
             "Dihedral": dihedral_term(diff_bonds, D_bonds,
                                       self.dihedral_mapping, t.dihedrals,
                                       t.C, compute_energy),
         }
-
-        # Scatter the force contributions to the atoms
-        F = np.zeros((t.nr_atoms, 3))
-        for indices, vectors, _ in terms.values():
-            for idx, vec in zip(indices, vectors):
-                np.add.at(F, idx, vec)
-        t2 = time.perf_counter()
-        self.timings["Diff & Dist"] += t1 - t0
-        self.timings["Forces"] += t2 - t1
+        # Scatter the bonded force contributions to the atoms in one pass
+        indices = np.concatenate([idx for term in terms.values()
+                                  for idx in term[0]])
+        vectors = np.concatenate([vec for term in terms.values()
+                                  for vec in term[1]]).reshape(-1, 3)
+        for d in range(3):
+            F[:, d] += np.bincount(indices, weights=vectors[:, d],
+                                   minlength=t.nr_atoms)
+        t4 = time.perf_counter()
+        for label, dt in zip(self.timings, (t1 - t0, t2 - t1, t3 - t2,
+                                            t4 - t3)):
+            self.timings[label] += dt
 
         energies = None
         if compute_energy:
-            energies = {name: energy for name, (_, _, energy) in terms.items()}
-        return ForceResult(F, diff_bonds, D_bonds, diff_LJ, D_LJ, energies)
+            energies = {"Bond": terms["Bond"][2],
+                        "Angular": terms["Angular"][2],
+                        "LJ": LJ_energy,
+                        "Dihedral": terms["Dihedral"][2]}
+        return ForceResult(F, diff_bonds, D_bonds, min_ratio, energies)

@@ -30,6 +30,7 @@ class Config:
     # [lennard_jones]: exactly one of the two must be set
     r_cutoff_scalar: float | None = 2.0
     f_threshold: float | None = None
+    neighbour_skin: float = 0.1
 
     # [output]
     output_dir: Path = Path("trajectories")
@@ -46,6 +47,7 @@ class Config:
         'O-O (Oxygen)'])
     RDF_thin: float = 1.0
     RDF_dr: float = 0.005
+    RDF_gif_frames: int = 200
     pairs_of_interest: list = field(default_factory=lambda: [
         'O~H (Water~Ethanol)', 'O~H (Ethanol~Ethanol)', 'O~H (Water~Water)',
         'O~O (Water~Water)', 'O~O (Water~Ethanol)', 'O~O (Ethanol~Ethanol)'])
@@ -92,6 +94,8 @@ class Config:
             raise ValueError("r_cutoff_scalar must be >= 0.")
         if self.f_threshold is not None and self.f_threshold < 0:
             raise ValueError("f_threshold must be >= 0.")
+        if not self.neighbour_skin > 0:
+            raise ValueError("neighbour_skin must be > 0.")
 
         for f in fields(self):
             if f.type is bool and not isinstance(getattr(self, f.name), bool):
@@ -108,6 +112,9 @@ class Config:
                 raise ValueError("RDF_thin must be > 0 and <= 1.")
             if self.RDF_dr <= 0:
                 raise ValueError("RDF_dr must be > 0.")
+            if not (isinstance(self.RDF_gif_frames, int)
+                    and self.RDF_gif_frames >= 2):
+                raise ValueError("RDF_gif_frames must be an integer >= 2.")
         return self
 
 
@@ -123,7 +130,8 @@ TOML_LAYOUT = {
                     "initial_temp": "initial_temp",
                     "temp_control": "temp_control"},
     "lennard_jones": {"r_cutoff_scalar": "r_cutoff_scalar",
-                      "f_threshold": "f_threshold"},
+                      "f_threshold": "f_threshold",
+                      "neighbour_skin": "neighbour_skin"},
     "output": {"directory": "output_dir", "show_plots": "show_plots",
                "vmd_path": "vmd_path"},
     "plots": {"energy": "energy_graph", "temperature": "temp_graph",
@@ -132,7 +140,7 @@ TOML_LAYOUT = {
               "vmd": "VMD_vis"},
     "phase_space": {"bonds": "bonds_of_interest"},
     "rdf": {"pairs": "pairs_of_interest", "thin": "RDF_thin",
-            "dr": "RDF_dr"},
+            "dr": "RDF_dr", "gif_frames": "RDF_gif_frames"},
 }
 
 

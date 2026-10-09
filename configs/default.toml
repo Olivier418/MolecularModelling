@@ -38,6 +38,10 @@ r_cutoff_scalar = 2.0
 # Alternatively: neglect LJ forces smaller than this (kJ/mol/nm). 0 includes
 # all pairs, inf disables LJ. Typically between 0 and 0.1.
 # f_threshold = 0.05
+# Extra distance (nm) beyond the largest cutoff kept in the neighbour list.
+# Larger values mean fewer list rebuilds but more pairs per step. Results do
+# not depend on it.
+neighbour_skin = 0.1
 
 [output]
 directory = "../trajectories"
@@ -66,3 +70,4 @@ pairs = ["O~H (Water~Ethanol)", "O~H (Ethanol~Ethanol)", "O~H (Water~Water)",
          "O~O (Water~Water)", "O~O (Water~Ethanol)", "O~O (Ethanol~Ethanol)"]
 thin = 1.0              # fraction of pairs to sample (0 < thin <= 1)
 dr = 0.005              # histogram bin width (nm)
+gif_frames = 200        # max frames per gif (statistics use all saves)

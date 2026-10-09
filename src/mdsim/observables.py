@@ -1,7 +1,6 @@
 """Measurements recorded on save steps: phase space data and RDF histograms."""
 import numpy as np
-
-from .geometry import pair_vectors
+from numba import njit
 
 
 def _parse_species_pair(entry, separator):
@@ -88,11 +87,40 @@ class RDF:
             keep = rng.choice(len(i), int(np.ceil(len(i) * thin)),
                               replace=False)
             self.names.append(entry)
-            self.pairs.append((i[keep], j[keep]))
+            self.pairs.append((i[keep].astype(np.int32),
+                               j[keep].astype(np.int32)))
 
-        self.histograms = np.empty((nr_saves, len(self.names), nr_bins))
+        self.histograms = np.zeros((nr_saves, len(self.names), nr_bins))
 
     def record(self, save_idx, x):
         for k, (i, j) in enumerate(self.pairs):
-            _, D = pair_vectors(x, i, j, self.boxsize)
-            self.histograms[save_idx, k] = np.histogram(D, self.bin_edges)[0]
+            pair_histogram(x, i, j, self.boxsize, self.bin_edges,
+                           self.histograms[save_idx, k])
+
+
+@njit(cache=True)
+def pair_histogram(x, i, j, boxsize, bin_edges, counts):
+    """Adds the minimum-image distances of the pairs (i, j) to the histogram
+    counts. Same binning as np.histogram on uniform bin_edges (the last bin
+    includes its right edge), without storing the distances."""
+    inv_boxsize = 1. / boxsize
+    nr_bins = len(bin_edges) - 1
+    first, last = bin_edges[0], bin_edges[-1]
+    for k in range(len(i)):
+        dx = x[i[k], 0] - x[j[k], 0]
+        dy = x[i[k], 1] - x[j[k], 1]
+        dz = x[i[k], 2] - x[j[k], 2]
+        # Minimum image (floor is much faster than % in compiled code)
+        dx -= boxsize * np.floor(dx * inv_boxsize + 0.5)
+        dy -= boxsize * np.floor(dy * inv_boxsize + 0.5)
+        dz -= boxsize * np.floor(dz * inv_boxsize + 0.5)
+        D = np.sqrt(dx * dx + dy * dy + dz * dz)
+        if D < first or D > last:
+            continue
+        b = min(int((D - first) / (last - first) * nr_bins), nr_bins - 1)
+        # Correct for rounding, as np.histogram does
+        if D < bin_edges[b]:
+            b -= 1
+        elif b != nr_bins - 1 and D >= bin_edges[b + 1]:
+            b += 1
+        counts[b] += 1

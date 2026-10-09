@@ -12,10 +12,9 @@ def pair_vectors(positions, i, j, boxsize):
     boxsize!=0."""
     diff = positions[i] - positions[j]
 
-    # Apply periodic boundary conditions if needed
+    # Apply periodic boundary conditions if needed: map into [-L/2, L/2)
     if boxsize != 0.:
-        half = boxsize / 2
-        diff = (diff + half) % boxsize - half
+        diff -= boxsize * np.floor(diff * (1. / boxsize) + 0.5)
 
     # Compute distances
     distances = np.sqrt(np.sum(diff * diff, axis=1))

@@ -110,10 +110,12 @@ def _animate(fig, update, nr_frames, path, progress, offset):
     ani.save(path, writer='pillow')
 
 
-def rdf_plots(rdf, save_interval, folder_name, r0, RDF_conf=0.9):
+def rdf_plots(rdf, save_interval, folder_name, r0, RDF_conf=0.9,
+              max_frames=200):
     """Creates gifs (and first/last frame pngs) of the RDF of each pair of
     interest over time, with running means and confidence intervals, plus one
-    gif comparing the means of all pairs."""
+    gif comparing the means of all pairs. The statistics use every saved
+    frame; the gifs show at most max_frames of them."""
     T, nr_pairs, nr_bins = rdf.histograms.shape
     bin_edges = rdf.bin_edges
     colors = plt.cm.tab10(np.linspace(0, 1, nr_pairs))
@@ -135,7 +137,10 @@ def rdf_plots(rdf, save_interval, folder_name, r0, RDF_conf=0.9):
     final_upper = upper[-1, :, start:]
     max_freq = np.max(final_upper[np.isfinite(final_upper)])
 
-    progress = ProgressBar((nr_pairs + 1) * T)
+    # Evenly spaced frames to animate, always including the first and last
+    frames = np.unique(np.linspace(0, T - 1, min(T, max_frames)).astype(int))
+    nr_frames = len(frames)
+    progress = ProgressBar((nr_pairs + 1) * nr_frames)
     r = bin_edges[:-1]
 
     # One gif per pair, with confidence interval
@@ -157,14 +162,16 @@ def rdf_plots(rdf, save_interval, folder_name, r0, RDF_conf=0.9):
         ax.legend(loc='upper right')
         fig.savefig(os.path.join(pair_folder, f'first_frame_{pair}.png'))
 
-        def update(frame, k=k, pair=pair, ax=ax, lines=(line_mean, line_lower,
-                                                        line_upper)):
+        def update(n, k=k, pair=pair, ax=ax, lines=(line_mean, line_lower,
+                                                    line_upper)):
+            frame = frames[n]
             for line, values in zip(lines, (means, lower, upper)):
                 line.set_ydata(values[frame, k])
             ax.set_title(f"RDF of {pair} at t={frame * save_interval:.4f}")
 
-        _animate(fig, update, T, os.path.join(pair_folder, f'RDF_{pair}.gif'),
-                 progress, k * T)
+        _animate(fig, update, nr_frames,
+                 os.path.join(pair_folder, f'RDF_{pair}.gif'), progress,
+                 k * nr_frames)
         fig.savefig(os.path.join(pair_folder, f'last_frame_{pair}.png'))
         plt.close(fig)
 
@@ -178,13 +185,14 @@ def rdf_plots(rdf, save_interval, folder_name, r0, RDF_conf=0.9):
     ax.legend(loc='upper right')
     fig.savefig(os.path.join(folder_name, 'first_frame.png'))
 
-    def update(frame):
+    def update(n):
+        frame = frames[n]
         for k, line in enumerate(lines):
             line.set_ydata(means[frame, k])
         ax.set_title(f"RDF at t={frame * save_interval:.4f}")
 
-    _animate(fig, update, T, os.path.join(folder_name, 'RDF.gif'), progress,
-             nr_pairs * T)
+    _animate(fig, update, nr_frames, os.path.join(folder_name, 'RDF.gif'),
+             progress, nr_pairs * nr_frames)
     fig.savefig(os.path.join(folder_name, 'last_frame.png'))
     plt.close(fig)
     progress.finish()

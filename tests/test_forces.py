@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from mdsim.constants import MOLECULE_DIR
-from mdsim.forcefield import lj_cutoffs, lj_pairs
+from mdsim.forcefield import lj_cutoffs
+from mdsim.neighbours import lj_pairs
 from mdsim.geometry import map_to_bonds, pair_vectors
 from mdsim.system import load_molecule
 
@@ -162,9 +163,10 @@ def test_force_is_negative_energy_gradient(term):
     rng = np.random.default_rng(0)
     x, t = water_ethanol_pair()
     ff = forcefield(_only(t, term))
-    if term == "LJ":
-        assert len(ff.i_LJ) > 0
     x = x + rng.normal(0, 0.005, x.shape)
+    if term == "LJ":
+        ff.compute(x)
+        assert len(ff.i_LJ) > 0
 
     h = 1e-6
     grad = np.zeros_like(x)
@@ -179,3 +181,51 @@ def test_force_is_negative_energy_gradient(term):
     assert np.abs(grad).max() > 1
     np.testing.assert_allclose(F, -grad, rtol=1e-5,
                                atol=1e-5 * np.abs(grad).max())
+
+
+# ----------------------------- Neighbour list --------------------------------
+def test_neighbour_list_matches_all_pairs_over_a_run():
+    """Forces with the neighbour list equal the all-pairs forces (up to
+    rounding), also after the list has been rebuilt several times."""
+    from mdsim.forcefield import ForceField
+    from mdsim.integrators import euler, initial_state, step, velocity_verlet
+    from mdsim.system import build_system, initial_velocities
+
+    rng = np.random.default_rng(0)
+    L = 2.0
+    t, x = build_system(L, 0.1, {"Water": 1, "Ethanol": 1}, MOLECULE_DIR, rng)
+    listed = ForceField(t, L, r_cutoff_scalar=2.0, skin=0.05)
+    # A skin reaching half the box makes the list hold all pairs
+    everything = ForceField(t, L, r_cutoff_scalar=2.0, skin=L)
+    assert not listed.neighbours.all_pairs and everything.neighbours.all_pairs
+
+    v = initial_velocities(t.masses, 600., rng)
+    state, _ = initial_state(x, v, listed.compute, t.masses)
+    for k in range(60):
+        method = euler if k == 0 else velocity_verlet
+        # Soft-capped LJ and the thermostat keep the unrelaxed grid stable
+        state, result = step(method, state,
+                             lambda x: listed.compute(x, True, 0.8),
+                             t.masses, 0.0005, temp=600.)
+        reference = everything.compute(state.x, True, 0.8)
+        # Only the order of summation differs
+        np.testing.assert_allclose(result.forces, reference.forces,
+                                   rtol=1e-12, atol=1e-9)
+        for name, value in reference.energies.items():
+            np.testing.assert_allclose(result.energies[name], value,
+                                       rtol=1e-12)
+    assert listed.neighbours.nr_builds > 1
+    assert len(listed.i_LJ) < len(everything.i_LJ) / 2
+
+
+def test_pair_histogram_matches_numpy():
+    from mdsim.observables import pair_histogram
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 3., (300, 3))
+    i, j = np.triu_indices(300, k=1)
+    edges = np.linspace(0, 1.5, 151)
+    counts = np.zeros(150)
+    pair_histogram(x, i, j, 3., edges, counts)
+    _, D = pair_vectors(x, i, j, 3.)
+    np.testing.assert_array_equal(counts, np.histogram(D, edges)[0])
