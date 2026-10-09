@@ -1,9 +1,8 @@
 # Import necessary libraries and modules
 from auxiliary import (scale_velocity, normalize_molecule_position, 
-                       rotate_molecule, normalize_molecule_rotation, 
-                       random_graph)
+                       rotate_molecule, normalize_molecule_rotation)
 from parse_functions import xyz_to_array, itp_to_data
-from config import mass_dict, molar_volume, avogadro
+from config import molar_volume, avogadro
 
 import os
 import numpy as np
@@ -18,38 +17,6 @@ def initializeVelocity(masses, temp):
     return scale_velocity(v, masses, temp)
 
 
-
-def random_molecule(N):
-    """Creates a random nonsense molecule using the random_graph function. 
-    Many parameters are chosen at random, and the structure doesn't respect 
-    valency of atoms. Used in testing."""
-    # Random positions and number of angles
-    X = np.random.rand(N, 3)
-    bonds, angles, dihedrals = random_graph(N)
-    
-    # Random values for other data.
-    atoms = np.random.choice(["O", "H", "C"], size=N, replace=True)
-    masses = np.array([mass_dict[atom] for atom in atoms])
-    
-    kb = np.random.rand(len(bonds))
-    r0 = np.random.rand(len(bonds))
-    
-    ktheta = np.random.rand(len(angles))
-    theta0 = np.random.rand(len(angles))
-    
-    epsilon_LJ = np.array([]) 
-    sigma_LJ = np.array([])
-    r_cutoff_LJ = np.array([])
-    i_LJ, j_LJ = np.array([],dtype=int) , np.array([],dtype=int) 
-    
-    C1 = np.zeros(len(dihedrals))
-    C2 = np.zeros(len(dihedrals))
-    C3 = np.zeros(len(dihedrals))
-    C4 = np.zeros(len(dihedrals))
-    
-    return (X, atoms, bonds.astype(int), kb, r0, angles.astype(int), ktheta, 
-            theta0, epsilon_LJ, sigma_LJ, r_cutoff_LJ, i_LJ, j_LJ, 
-            dihedrals.astype(int), C1, C2, C3, C4, masses)
 
 # ------------------------------- Creating a mixed initial configuration -------------------------------
 

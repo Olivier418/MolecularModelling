@@ -4,8 +4,7 @@ from scipy.optimize import brentq
 from scipy.optimize import differential_evolution
 import os
 from numba import njit, int32, float64
-from itertools import permutations, combinations 
-import networkx as nx
+from itertools import permutations
 
 from config import kboltz
 
@@ -136,36 +135,6 @@ def compute_LJ_indices(nr_atoms,dihedrals,angles,epsilon,sigma, molec_index):
     i_LJ, j_LJ = i[LJ_indices], j[LJ_indices]    
     
     return(i_LJ,j_LJ)
-
-# ----------------------------- Graph functions -------------------------------
-def find_paths_of_length_nx(graph, length):
-    """
-    Find all unique paths of a given length in the graph using the nx package.
-    """
-    paths = []
-    # Iterate over all pairs of nodes
-    for source, target in combinations(graph.nodes, 2):  
-        for path in nx.all_simple_paths(graph, source=source, 
-                                        target=target, cutoff=length):
-            if len(path) == length:  
-                paths.append(path)
-    return paths
-
-def random_graph(n):
-    """
-    Generate a random connected graph using NetworkX with n vertices and 
-    return bonds, angles, dihedrals.
-    """
-    m = np.random.randint(low=n-1,high=0.5*n*(n-1))
-    G = nx.gnm_random_graph(n, m)
-    while not nx.is_connected(G):
-        G = nx.gnm_random_graph(n, m)
-    
-    bonds = find_paths_of_length_nx(G,2)
-    angles = find_paths_of_length_nx(G,3)
-    dihedrals = find_paths_of_length_nx(G,4)
-
-    return np.array(bonds), np.array(angles), np.array(dihedrals)
 
 # ---------------------- Integration help Functions ---------------------------
 @njit
