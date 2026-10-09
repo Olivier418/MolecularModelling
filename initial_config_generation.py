@@ -1,6 +1,6 @@
 # Import necessary libraries and modules
 from auxiliary import (scale_velocity, normalize_molecule_position, 
-                       rotate_molecule, normalize_molecule_rotation)
+                       normalize_molecule_rotation)
 from parse_functions import xyz_to_array, itp_to_data
 from config import molar_volume, avogadro
 
@@ -148,17 +148,8 @@ def random_config(boxsize: float, random_grid_offset: float,
     repeated_positions = np.repeat(normalized_positions, 
                                    nr_molecules_per_type,axis=0)
     
-    parity = np.mod(np.sum(all_positions,axis=1),2)
-    theta = np.where(parity==1,np.pi,0)
-    phi = np.where(parity==1,np.pi/4,3*np.pi/4)
-    
-    theta = theta[selections]
-    phi = phi[selections]
-    rotated_positions = np.array([rotate_molecule(pos, 0, 0) 
-                                  for i, pos in enumerate(repeated_positions)],dtype=object)
-    
-    # Concatenate all rotated positions into a single array
-    POSITIONS = np.array(np.vstack(rotated_positions),dtype='f')
+    # Concatenate all positions into a single array
+    POSITIONS = np.array(np.vstack(repeated_positions),dtype='f')
 
     # Shift the positions by the random_offset and grid positions.
     POSITIONS = POSITIONS + boxsize / N * (random_offset + molecule_positions)

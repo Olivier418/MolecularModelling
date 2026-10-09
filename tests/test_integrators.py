@@ -88,13 +88,13 @@ def _run(method, s, v0, dt, steps, temp=0., temp_control=False):
                   s["i_LJ"], s["j_LJ"])
     a_prev = F / s["masses"][:, None]
     x_prev, v = s["x"], v0
-    x, v, a = _step(euler, s, x_prev, x_prev, v, a_prev, a_prev, dt,
-                    temp, temp_control)[:3]
+    x, x_prev, v, a = _step(euler, s, x_prev, x_prev, v, a_prev, a_prev, dt,
+                            temp, temp_control)[:4]
     history = [(x_prev, v0), (x, v)]
     for _ in range(steps - 1):
-        x_new, v, a_new = _step(method, s, x, x_prev, v, a, a_prev, dt,
-                                temp, temp_control)[:3]
-        x_prev, x, a_prev, a = x, x_new, a, a_new
+        x, x_prev, v, a_new = _step(method, s, x, x_prev, v, a, a_prev, dt,
+                                    temp, temp_control)[:4]
+        a_prev, a = a, a_new
         history.append((x, v))
     return history
 
@@ -113,11 +113,7 @@ def test_velocity_verlet_conserves_energy():
     assert abs(E[-200:].mean() - E[:200].mean()) < 0.001 * KE0
 
 
-@pytest.mark.parametrize("method", [
-    velo_verlet, beeman,
-    pytest.param(verlet, marks=pytest.mark.xfail(
-        strict=True, reason="Verlet ignores rescaled velocities")),
-])
+@pytest.mark.parametrize("method", [velo_verlet, beeman, verlet])
 def test_temperature_control_holds_temperature(method):
     np.random.seed(0)
     s = water_ethanol_pair()

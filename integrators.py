@@ -1,5 +1,5 @@
 # Import necessary libraries and modules
-from auxiliary import (scale_velocity, updt, project_to_box, cutoff_calculator, 
+from auxiliary import (velocity_scale, updt, project_to_box, cutoff_calculator,
                       diff_and_dist_arr, find_bond_indices, compute_LJ_indices)
 from forces import net_force
 from energy import (bond_energy, kinetic_energy, LJ_energy, 
@@ -48,10 +48,14 @@ def integrator(method, x_im1, x_im2, v_im1, a_im1, a_im2, force_parameters,
                bonds, nr_atoms, dt, masses, boxsize, temp, temp_control, i_LJ, 
                j_LJ, comptime_vis):
     """
-    Updates x, v and a using update functions defined above. If temp_control 
-    is true, velocities will be rescaled to achieve a temperature temp. If 
-    comptime_vis is True, time measurements will be made. 
-    """    
+    Updates x, v and a using update functions defined above. If temp_control
+    is true, velocities will be rescaled to achieve a temperature temp. If
+    comptime_vis is True, time measurements will be made.
+
+    Also returns x_im1, which differs from the input only for Verlet with
+    temp_control: Verlet has no explicit velocity, so the thermostat rescales
+    the last displacement x_i - x_im1 instead.
+    """
     # Compute new positions
     x_i = method['positions'](x_im1, x_im2, v_im1, a_im1, a_im2, dt)
     
@@ -87,10 +91,12 @@ def integrator(method, x_im1, x_im2, v_im1, a_im1, a_im2, force_parameters,
     
     # Optional: Temperature scaling
     if temp_control:
-        v_i = scale_velocity(v_i, masses, temp)
+        scale = velocity_scale(v_i, masses, temp)
+        v_i = scale * v_i
+        if method is verlet:
+            x_im1 = x_i - scale * (x_i - x_im1)
 
-
-    return (x_i, v_i, a_i, diff_bonds, D_bonds, 
+    return (x_i, x_im1, v_i, a_i, diff_bonds, D_bonds,
             diff_LJ, D_LJ, diff_dist_time, force_time)
 
 # -------------------------- Main Integration Function ------------------------  
@@ -113,8 +119,8 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     nr_atoms, _ = initial_x.shape
     print("  Computing LJ indices...")
     # Determine pairs that experience LJ force
-    i_LJ, j_LJ = compute_LJ_indices(nr_atoms, dihedrals, angles, 
-                                    epsilon, sigma, molec_index)
+    i_LJ, j_LJ = compute_LJ_indices(nr_atoms, bonds, angles, dihedrals, 
+                                    epsilon, sigma)
     print("  Computing epsilon and sigma...")
     
     #Precompute epsilon, sigma and r_cutoff
@@ -143,43 +149,50 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
                             ktheta, theta0, epsilon_LJ, sigma_LJ, dihedrals, C1, 
                             C2, C3, C4, i_LJ, j_LJ, r_cutoff_LJ,r_threshold)
         
-        integration_parameters = (bonds, nr_atoms, dt, masses, boxsize, 
+        integration_parameters = (bonds, nr_atoms, dt, masses, boxsize,
                                   temp, False, i_LJ, j_LJ, False)
-        
+
         diff_bonds, D_bonds = diff_and_dist_arr(initial_x, bonds[:,0], bonds[:,1], 0.)
-        diff_LJ, D_LJ = diff_and_dist_arr(initial_x, i_LJ, j_LJ, boxsize)   
-        
-        F= net_force(diff_bonds, D_bonds, diff_LJ, D_LJ, bonds, nr_atoms, 
+        diff_LJ, D_LJ = diff_and_dist_arr(initial_x, i_LJ, j_LJ, boxsize)
+
+        F= net_force(diff_bonds, D_bonds, diff_LJ, D_LJ, bonds, nr_atoms,
                        *force_parameters)
-    
+
         Aim2 = F / masses[:, None]
-        
-        (Xim1, Vim1, Aim1, diff_bonds, D_bonds, 
-        diff_LJ, D_LJ, diff_dist_time, force_time) = integrator(euler,
-            initial_x, _, 0, Aim2, _, force_parameters, *integration_parameters
-        )
-                                                                
-        Xim2 = initial_x
-        
-        # Perform the rest of the integration with the chosen method
-        start = np.sum(D_LJ>r_threshold)
+        smallest_dist = np.min(D_LJ/sigma_LJ, initial=np.inf)
         total = np.sum(D_LJ<r_threshold)
-        
-        smallest_dist = np.min(D_LJ/sigma_LJ)
+
+        # Start from rest with an Euler step
+        (Xim1, Xim2, Vim1, Aim1, diff_bonds, D_bonds,
+        diff_LJ, D_LJ, diff_dist_time, force_time) = integrator(euler,
+            initial_x, initial_x, np.zeros_like(initial_x), Aim2, Aim2,
+            force_parameters, *integration_parameters
+        )
+
+        # Perform the rest of the integration with the chosen method
+        max_iterations = 100_000
+        iteration = 0
         while np.any(D_LJ<r_threshold):
-            X_temp, A_temp = Xim1, Aim1
-            (Xim1, Vim1, Aim1, diff_bonds, 
-             D_bonds, diff_LJ, D_LJ, 
-             diff_dist_time, force_time) = integrator(method, Xim1, Xim2, Vim1, 
+            iteration += 1
+            if iteration > max_iterations:
+                raise RuntimeError(
+                    f"Equilibration did not separate all LJ pairs within "
+                    f"{max_iterations} steps. Lower r_threshold_scalar or "
+                    f"check the LJ cutoff.")
+            A_temp = Aim1
+            (Xim1, Xim2, Vim1, Aim1, diff_bonds,
+             D_bonds, diff_LJ, D_LJ,
+             diff_dist_time, force_time) = integrator(method, Xim1, Xim2, Vim1,
                                                       Aim1, Aim2, force_parameters,
                                                       *integration_parameters)
-            Xim2, Aim2 = X_temp, A_temp
-            updt(total, np.sum(D_LJ>r_threshold) - start)
+            Aim2 = A_temp
+            updt(max(total, 1), max(total - np.sum(D_LJ<r_threshold), 0))
         print()
         print(f"  Equilibrium configuration initialized. Smallest distance"
-              f"  increased from {smallest_dist:.3f} to {np.min(D_LJ/sigma_LJ):.3f}...")
-            
-        initial_x = Xim2
+              f"  increased from {smallest_dist:.3f} to "
+              f"{np.min(D_LJ/sigma_LJ, initial=np.inf):.3f}...")
+
+        initial_x = Xim1
         
     print("Saving initial configuration data to files...")
 
@@ -187,7 +200,7 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     
     
     # Define folder_name based on input choice
-    if f_threshold:
+    if f_threshold is not None:
         subdirectory += f"fthr={f_threshold}_"
     else:
         subdirectory += f"rcut-sclr={r_cutoff_scalar}_"
@@ -220,7 +233,7 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     
     print("Initializing data arrays...")
     timesteps = int(np.ceil(endTime / dt))
-    total_saves = total_saves = 1 + (timesteps) // save_steps
+    total_saves = 1 + timesteps // save_steps
     
     if RDF_vis:
         print("  Initializing RDF...")
@@ -235,8 +248,7 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
         Angular_E = np.empty(total_saves)
         LJ_E = np.empty(total_saves)
         Dihedral_E = np.empty(total_saves)
-        Kinetic_E = np.empty(total_saves)
-    if temp_graph:
+    if energy_graph or temp_graph:
         Kinetic_E = np.empty(total_saves)
     if phase_space_diagram:  
         print("  Initializing phase space...")
@@ -259,14 +271,14 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
             
             # Compute distances not computed by simulation
             _, other_dists = zip(*[
-                diff_and_dist_arr(X, RDF_leftover_indices[i, 0], 
-                                  RDF_leftover_indices[i, 1], boxsize) 
-                    for i in range(RDF_leftover_indices.shape[0])])
+                diff_and_dist_arr(X, RDF_leftover_indices[k, 0], 
+                                  RDF_leftover_indices[k, 1], boxsize) 
+                    for k in range(RDF_leftover_indices.shape[0])])
             
             # Save histogram data
-            for i in range(RDF_leftover_indices.shape[0]):
-                D = np.hstack((LJ_dists[i], bond_dists[i], other_dists[i]))
-                RDF_MATRIX[save_idx, i] = np.histogram(D, bins=bin_edges)[0]
+            for k in range(RDF_leftover_indices.shape[0]):
+                D = np.hstack((LJ_dists[k], bond_dists[k], other_dists[k]))
+                RDF_MATRIX[save_idx, k] = np.histogram(D, bins=bin_edges)[0]
                 
         t1 = time.perf_counter()
         
@@ -297,8 +309,8 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
         t4 = time.perf_counter()
         
         if phase_space_diagram:            
-            for i,mask in enumerate(mask_per_bond):
-                ps_arrays[i] [save_idx] = D_bonds[mask]               
+            for k, mask in enumerate(mask_per_bond):
+                ps_arrays[k][save_idx] = D_bonds[mask]               
         t5 = time.perf_counter()
         # After measuring all times above, save them in the computation_times
         # array to plot at the end (togehter with times of dist and force.)
@@ -338,9 +350,9 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     
     start_integration = time.perf_counter()
     
-    (Xim1, Vim1, Aim1, diff_bonds, D_bonds, 
+    (Xim1, Xim2, Vim1, Aim1, diff_bonds, D_bonds, 
     diff_LJ, D_LJ, diff_dist_time, force_time) = integrator(euler,
-        Xim2, _, Vim2, Aim2, _, force_parameters, *integration_parameters
+        Xim2, Xim2, Vim2, Aim2, Aim2, force_parameters, *integration_parameters
     )
           
 
@@ -357,15 +369,14 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     
     # Perform the rest of the integration with the chosen method
     for i in range(2, timesteps+1):
-        # save current X and A values in temporary values to later copy
-        # to Xim2 and Aim2.
-        X_temp, A_temp = Xim1, Aim1
-        (Xim1, Vim1, Aim1, diff_bonds, 
+        # save the current A in a temporary value to later copy to Aim2.
+        A_temp = Aim1
+        (Xim1, Xim2, Vim1, Aim1, diff_bonds, 
          D_bonds, diff_LJ, D_LJ, 
          diff_dist_time, force_time) = integrator(method, Xim1, Xim2, Vim1, 
                                                   Aim1, Aim2, force_parameters,
                                                   *integration_parameters)
-        Xim2, Aim2 = X_temp, A_temp
+        Aim2 = A_temp
         
         # Save data every save_steps steps
         if i % save_steps == 0:            
@@ -392,9 +403,9 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
         print("Finished RDF figures.")
     if energy_graph:
         energies = np.array([Bond_E,Angular_E,LJ_E,Dihedral_E,Kinetic_E])
-        energy_plot(energies.T,endTime, folder_name)
+        energy_plot(energies.T, dt*save_steps, folder_name)
     if temp_graph:
-        temperature_plot(Kinetic_E, 3*nr_atoms, endTime, folder_name)
+        temperature_plot(Kinetic_E, 3*nr_atoms, dt*save_steps, folder_name)
     if phase_space_diagram:
         ps_path = os.path.join(folder_name ,"ps_diagram")
         if not os.path.exists(ps_path):
@@ -406,5 +417,5 @@ def integrate(initial_x, bonds, atoms, kb, r0, angles, ktheta, theta0, epsilon,
     if VMD_vis:
         print("Opening VMD")
         d_max = 1.05*np.max(D_bonds) # Used for showing dynamic bonds in VMD.
-        visualize_xyz_with_vmd(folder_name+"\\INTEGRATED.xyz",
+        visualize_xyz_with_vmd(os.path.join(folder_name, "INTEGRATED.xyz"),
                                10*boxsize,10*d_max)

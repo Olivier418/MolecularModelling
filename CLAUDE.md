@@ -63,12 +63,6 @@ Section headers are parsed by fixed character offsets (`[6:]`, `[7:]`, `[10:]`),
 
 ## Known issues (verified, not yet fixed)
 
-- `visualizations.initialize_RDF` uses `np.in1d` (removed in NumPy 2.x), so the default `RDF_vis=True` crashes. It also uses deprecated `np.core.records`.
-- O2: the bonded O–O pair is **not** excluded from LJ, because diatomics have no angles. The soft-start loop can then never terminate.
-- `array_to_xyz` truncates `str(float)` to 10 chars, which corrupts values printed in scientific notation (1.23e-05 → 1.23).
-- `integrate.save_visualization_data`: the RDF `for i in ...` loop shadows the timestep `i`, so the xyz comment line gets the wrong time.
-- Temperature control has no effect for `verlet`, because Verlet positions never read `v`.
-- `random_config` computes per-grid-site rotations (`theta`, `phi`) and then ignores them (`rotate_molecule(pos, 0, 0)`).
 - Performance: an 8.4k-atom water/ethanol box has ~19.7M LJ pairs, and only ~1.2% are inside the cutoff. The minimum-image distance over all pairs takes ~2 s/step.
 
 ## Conventions

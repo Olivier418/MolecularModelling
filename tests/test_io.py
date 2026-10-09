@@ -20,8 +20,6 @@ def test_xyz_round_trip(tmp_path):
     np.testing.assert_allclose(x2, x, atol=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="writer truncates str(float) to 10 "
-                                       "characters")
 def test_xyz_writer_keeps_small_values(tmp_path):
     x = np.array([[1.23456789e-6, -0.000123456789, 1.23456789]])
     array_to_xyz(x.copy(), np.array(["H"]), tmp_path / "out.xyz", 0, "write")

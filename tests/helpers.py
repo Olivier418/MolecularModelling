@@ -103,9 +103,9 @@ def water_ethanol_pair():
     system = combine([load_molecule("Water"), load_molecule("Ethanol")],
                      [(0.0, 0.0, 0.0), (0.45, 0.1, -0.05)])
     n = len(system["masses"])
-    i_LJ, j_LJ = compute_LJ_indices(n, system["dihedrals"], system["angles"],
-                                    system["epsilon"], system["sigma"],
-                                    system["molec_index"])
+    i_LJ, j_LJ = compute_LJ_indices(n, system["bonds"], system["angles"],
+                                    system["dihedrals"], system["epsilon"],
+                                    system["sigma"])
     system["i_LJ"], system["j_LJ"] = i_LJ, j_LJ
     system["sigma_LJ"] = 0.5 * (system["sigma"][i_LJ] + system["sigma"][j_LJ])
     system["epsilon_LJ"] = np.sqrt(system["epsilon"][i_LJ]

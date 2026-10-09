@@ -105,12 +105,15 @@ def cutoff_calculator(r_cutoff_scalar, f_threshold, epsilon_LJ, sigma_LJ,
             
     return(r_cutoff)
 
-def compute_LJ_indices(nr_atoms,dihedrals,angles,epsilon,sigma, molec_index):
+def compute_LJ_indices(nr_atoms, bonds, angles, dihedrals, epsilon, sigma):
     """Computes the indices of pairs that experience LJ forces in the system.
     This excludes 0-epsilon or 0-sigma atoms or atoms that interact through
-    angular/dihedral forces."""
+    bond/angular/dihedral forces."""
     # Create a mask that excludes the correct intramolecular pairs
     molec_mask = np.ones((nr_atoms, nr_atoms), dtype=bool)  # Start with all True
+    # Exclude the bonds (needed for diatomics, which have no angles)
+    molec_mask[bonds[:, 0], bonds[:, 1]] = False
+    molec_mask[bonds[:, 1], bonds[:, 0]] = False
     # Exclude the dihedrals
     dihedral_pairs = np.array(list(permutations([0, 1, 2, 3], 2)))
     molec_mask[dihedrals[:, dihedral_pairs[:, 0]], 
@@ -152,14 +155,19 @@ def diff_and_dist_arr(positions, i, j, boxsize):
     distances = np.sqrt(np.sum(diff * diff, axis=1))
     return diff, distances
 
+def velocity_scale(v_i, masses, T_0):
+    """
+    Factor by which to scale velocities to reach temperature T_0.
+    """
+    KE = 0.5 * np.dot(masses, np.sum(v_i**2, axis=1))
+    Nf = 3 * masses.shape[0]
+    return np.sqrt(T_0 * Nf * kboltz / (2 * KE))
+
 def scale_velocity(v_i, masses, T_0):
     """
     Scale velocities to ensure temperature control if required.
     """
-    KE = 0.5 * np.dot(masses, np.sum(v_i**2, axis=1))
-    Nf = 3 * masses.shape[0]
-    v_i *= np.sqrt(T_0 * Nf * kboltz / (2 * KE))
-    return v_i
+    return v_i * velocity_scale(v_i, masses, T_0)
 
 # ------------------------- position manipulation -----------------------------
 def normalize_molecule_position(array):

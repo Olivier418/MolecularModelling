@@ -100,10 +100,10 @@ def visualize_xyz_with_vmd(xyz_filepath,boxsize,d_max=0.15):
         if os.path.exists(tcl_script_path):
             os.remove(tcl_script_path)
 
-def temperature_plot(KE, Nf, endTime, folder_name):
+def temperature_plot(KE, Nf, save_interval, folder_name):
     """Plots the temperature using the data in KineticEnergy. """
     # Generate time points for the x-axis
-    time_points = np.linspace(0, endTime, len(KE))
+    time_points = save_interval * np.arange(len(KE))
     
     #Compute temperature
     T = 2*KE/(kboltz*Nf)
@@ -123,12 +123,11 @@ def temperature_plot(KE, Nf, endTime, folder_name):
     plt.show()
 
 
-def energy_plot(energy_matrix, endTime, folder_name):
+def energy_plot(energy_matrix, save_interval, folder_name):
     """Creates a plot of the 5 types of energy in the system, as well as the
     total energy."""
     # Generate time points for the x-axis
-    num_points = energy_matrix.shape[0]
-    time_points = np.linspace(0, endTime, num_points)
+    time_points = save_interval * np.arange(energy_matrix.shape[0])
     
     # Plot energy components and total energy
     plt.plot(time_points, energy_matrix[:, 0], label="Bond energy")
@@ -236,47 +235,25 @@ def initialize_RDF(T, molecule_names, i_LJ, j_LJ, bonds, atom_types,
     nr_bins = int(domain / dr)
     bin_edges = np.linspace(0, domain, nr_bins + 1)
 
-    # Process the user input (which is given in the form of a list of strings)
-    split_poi = [entry.split(' ', 1) for entry in pairs_of_interest]
-    atom_pairs_of_interest = [sorted(pair.split('~')) for pair, _ in split_poi]
-    molecule_pairs_of_interest = [sorted(mol.strip('()').split('~')) 
-                                  for _, mol in split_poi]
-    
-    # Identify all possible atom and molecule pairs
-    unique_data, _ = np.unique(np.array([atom_types, molecule_names]), axis=1, 
-                               return_index=True)
-    atom_pairs = np.array([np.array(np.meshgrid(row, row)).T.reshape(-1, 2) 
-                           for row in unique_data])
-    molecule_pairs = np.array([np.array(np.meshgrid(row, row)).T.reshape(-1, 2) 
-                               for row in unique_data])
-    # Sort pairs for consistency
-    atom_pairs = np.sort(atom_pairs, axis=1)
-    molecule_pairs = np.sort(molecule_pairs, axis=1)
-    # Get unique pairs
-    atom_pairs, molecule_pairs = np.unique(np.array([atom_pairs, 
-                                                     molecule_pairs]), axis=1)
-    
-    # Identify which pairs of interest are present in the system.
-    is_in_pairs = np.isin(
-        np.array([atom_pairs_of_interest, molecule_pairs_of_interest]),
-        np.array([atom_pairs, molecule_pairs])
-    )
-    mask = np.all(is_in_pairs, axis=(0, 2))
-    valid_atoms = np.array(atom_pairs_of_interest)[mask]
-    valid_molecules = np.array(molecule_pairs_of_interest)[mask]
-    
-    # Create pair names for valid atom and molecule pairs
-    atom_pair_names = np.char.add(np.char.add(valid_atoms[:, 0], 
-                                              '~'), 
-                                  valid_atoms[:, 1])
-    molecule_pair_names = np.char.add(
-        np.char.add(' (',
-            np.char.add(
-                np.char.add(valid_molecules[:, 0], '~'),
-                valid_molecules[:, 1])
-        ), ')'
-    )
-    pair_names = np.char.add(atom_pair_names, molecule_pair_names)
+    # Process the user input. 'O~H (Water~Ethanol)' is the pair of an O atom
+    # in a Water molecule and an H atom in an Ethanol molecule, so each atom
+    # stays paired with its molecule when sorting.
+    system_species = set(zip(atom_types, molecule_names))
+    species_pairs, pair_names = [], []
+    for entry in pairs_of_interest:
+        atom_pair, molecule_pair = entry.split(' ', 1)
+        species = sorted(zip(atom_pair.split('~'),
+                             molecule_pair.strip('()').split('~')))
+        # Only keep pairs of interest that are present in the system.
+        if all(sp in system_species for sp in species):
+            species_pairs.append(species)
+            pair_names.append(entry)
+
+    valid_atoms = np.array([[a for a, _ in sp] for sp in species_pairs],
+                           dtype=str).reshape(-1, 2)
+    valid_molecules = np.array([[m for _, m in sp] for sp in species_pairs],
+                               dtype=str).reshape(-1, 2)
+    pair_names = np.array(pair_names, dtype=str)
 
     nr_valid_pairs = len(valid_atoms)
     
@@ -286,15 +263,11 @@ def initialize_RDF(T, molecule_names, i_LJ, j_LJ, bonds, atom_types,
     RDF_bond_indices = np.empty(nr_valid_pairs, dtype=object)
     RDF_leftover_indices = np.empty((nr_valid_pairs,2), dtype=object)
     
-    LJ_pairs = np.core.records.fromarrays([i_LJ, j_LJ], dtype=[('i', 'i4'), 
-                                                               ('j', 'i4')])
-    bond_pairs = np.core.records.fromarrays([bonds[:, 0], bonds[:, 1]], 
-                                            dtype=[('i', 'i4'), ('j', 'i4')])
-    
-    # Sort LJ_pairs and bond_pairs for fast membership lookup
-    LJ_pairs_sorted = np.sort(LJ_pairs)
-    bond_pairs_sorted = np.sort(bond_pairs)
-    
+    # Encode each pair (i, j) as a single integer for fast membership lookup
+    nr_atoms = len(atom_types)
+    LJ_keys = i_LJ.astype(np.int64) * nr_atoms + j_LJ
+    bond_keys = bonds[:, 0].astype(np.int64) * nr_atoms + bonds[:, 1]
+
     # Loop over valid pairs
     for pair_index, (valid_atom_pair, valid_molecule_pair) in enumerate(
                                                         zip(valid_atoms, 
@@ -312,12 +285,10 @@ def initialize_RDF(T, molecule_names, i_LJ, j_LJ, bonds, atom_types,
         distances_of_interest = np.triu(B | B.T, k=1)
         i_all, j_all = np.where(distances_of_interest) # Retrieve indices
     
-        # Convert to Fast set membership check with sorted arrays
-        true_indices = np.core.records.fromarrays([i_all, j_all], 
-                                                  dtype=[('i', 'i4'), 
-                                                         ('j', 'i4')])
-        mask_LJ = np.in1d(true_indices, LJ_pairs_sorted  , assume_unique=True)
-        mask_bond=np.in1d(true_indices, bond_pairs_sorted, assume_unique=True)
+        # Fast set membership check on the integer pair keys
+        keys = i_all.astype(np.int64) * nr_atoms + j_all
+        mask_LJ = np.isin(keys, LJ_keys, assume_unique=True)
+        mask_bond = np.isin(keys, bond_keys, assume_unique=True)
     
         # Identify pairs of interest that are not tracked by LJdist or bonddist
         mask = ~(mask_LJ | mask_bond)
@@ -379,8 +350,8 @@ def RDF_visualize(hist_values, bin_edges, bin_volumes, unique_pairs, timestep,
 
     # Normalize data for all pairs at once
     data = hist_values / bin_volumes[None, None, :]
-    initial_sums = np.sum(data[:, :, :], axis=2, keepdims=True)  # Sum over bins for normalization
-    data /= initial_sums[:, :, 0, None]  # Normalize to the sum of the first frame for each pair
+    # Normalize each frame of each pair to sum to 1 over the bins
+    data /= np.sum(data, axis=2, keepdims=True)
 
     # Vectorized computation of cumulative statistics
     cumulative_data = np.cumsum(data, axis=0)  # Cumulative sum for all time steps
@@ -389,7 +360,7 @@ def RDF_visualize(hist_values, bin_edges, bin_volumes, unique_pairs, timestep,
     squared_diffs = (data - means) ** 2
     std_devs = np.sqrt(np.cumsum(squared_diffs, axis=0) / n)  # Standard deviation
     
-    # Confidence intervals (95%)
+    # Confidence intervals (RDF_conf)
     margin_of_error = norm.ppf(1 - 0.5 * (1 - RDF_conf)) * (std_devs / np.sqrt(n))
     conf_intervals = np.zeros((T, nr_unique_pairs, nr_bins, 3))
     conf_intervals[:, :, :, 0] = means - margin_of_error  # Lower bound
@@ -402,7 +373,7 @@ def RDF_visualize(hist_values, bin_edges, bin_volumes, unique_pairs, timestep,
     
     helpdist = int(1.2*np.max(r0)/bin_edges[-1]*nr_bins)
     upper = conf_intervals[-1, :, helpdist:, 2]
-    max_freq = np.max(upper[np.isfinite(upper)])  # Use the 95th percentile of upper bounds
+    max_freq = np.max(upper[np.isfinite(upper)])
 
     # Plotting and saving for each pair
     for i, pair in enumerate(unique_pairs):
@@ -444,7 +415,7 @@ def RDF_visualize(hist_values, bin_edges, bin_volumes, unique_pairs, timestep,
     # Identify the largest frequency over time to set ylim properly later
     
     upper = conf_intervals[-1, :, helpdist:, 2]
-    max_freq = np.max(upper[np.isfinite(upper)])  # Use the 95th percentile of upper bounds
+    max_freq = np.max(upper[np.isfinite(upper)])
 
     # Plotting
     fig, ax = plt.subplots(figsize=(9, 6))

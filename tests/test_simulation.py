@@ -28,12 +28,11 @@ def test_random_config_counts():
     assert n_water == n_ethanol > 0
 
 
-@pytest.mark.xfail(strict=True, reason="diatomics have no angles, so the "
-                                       "bonded pair is not excluded")
 def test_bonded_pairs_excluded_from_LJ():
     o2 = load_molecule("Oxygen")
-    i_LJ, j_LJ = compute_LJ_indices(2, o2["dihedrals"], o2["angles"],
-                                    o2["epsilon"], o2["sigma"], np.zeros(2))
+    i_LJ, j_LJ = compute_LJ_indices(2, o2["bonds"], o2["angles"],
+                                    o2["dihedrals"], o2["epsilon"],
+                                    o2["sigma"])
     assert len(i_LJ) == 0
 
 
@@ -80,10 +79,32 @@ def test_short_run_with_all_plots(tmp_path):
         assert os.path.exists(os.path.join(run_dir, name))
 
 
-@pytest.mark.xfail(strict=True, reason="np.in1d was removed in NumPy 2")
 def test_short_run_with_RDF(tmp_path):
     run_dir, _ = _short_run(tmp_path, RDF_vis=True)
     assert os.path.exists(os.path.join(run_dir, "RDF", "RDF.gif"))
     # The RDF loop must not clobber the time written to the trajectory
     times = _xyz_times(os.path.join(run_dir, "INTEGRATED.xyz"))
     np.testing.assert_allclose(times, [0, 0.005, 0.01, 0.015, 0.02])
+
+
+def test_RDF_pair_keeps_atoms_with_their_molecules():
+    from visualizations import initialize_RDF
+    from helpers import water_ethanol_pair
+
+    s = water_ethanol_pair()
+    atoms = np.array(list("OHH" + "CHHHCHHOH"))
+    names = np.array(["Water"] * 3 + ["Ethanol"] * 9)
+    (LJ_idx, bond_idx, leftover, *_, pair_names, _) = initialize_RDF(
+        1, names, s["i_LJ"], s["j_LJ"], s["bonds"], atoms,
+        ["O~H (Ethanol~Water)"], 2.0, 1.0, 0.1)
+
+    assert list(pair_names) == ["O~H (Ethanol~Water)"]
+    i = np.concatenate([s["i_LJ"][LJ_idx[0]], s["bonds"][bond_idx[0], 0],
+                        leftover[0, 0]])
+    j = np.concatenate([s["j_LJ"][LJ_idx[0]], s["bonds"][bond_idx[0], 1],
+                        leftover[0, 1]])
+    species = {frozenset({(atoms[a], names[a]), (atoms[b], names[b])})
+               for a, b in zip(i, j)}
+    # The ethanol O with each of the two water H atoms
+    assert species == {frozenset({("O", "Ethanol"), ("H", "Water")})}
+    assert len(i) == 2

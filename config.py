@@ -12,5 +12,5 @@ molar_volume = {
     "Oxygen": 22.430,
     "Hydrogen": 22.390}
 
-kboltz = 0.00831 # Boltzman constant
+kboltz = 0.0083144626 # Boltzmann constant (kJ / (mol K))
 avogadro = 6.022e23 # Avogadros constant

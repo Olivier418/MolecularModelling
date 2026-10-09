@@ -36,20 +36,18 @@ def array_to_xyz(array, atoms, path, t, method='append'):
     Saves the trajectory data to a .xyz file readable by visualization tools.
     """
     nr_atoms, _ = array.shape
-    #VMD works with Anstrom, not nm. So scale the positions
-    array*=10
-    
+    #VMD works with Angstrom, not nm. So scale the positions
+    array = 10 * array
+
     action='w'
     if method=='append':
         action='a'
-    
+
     with open(path, action) as f:
         f.write(f"{nr_atoms}\n")
         f.write(f"Some text: t={t}\n")
-        for i in range(nr_atoms):
-            xyz = array[i].astype(str)
-            f.write(f"{atoms[i]}         {xyz[0][0:10]}      "
-                    f"{xyz[1][0:10]}      {xyz[2][0:10]}\n")
+        for atom, (x, y, z) in zip(atoms, array):
+            f.write(f"{atom:<2}{x:16.6f}{y:16.6f}{z:16.6f}\n")
             
 # --------------------- itp read/write file functions -------------------------
 def itp_to_data(filename):
