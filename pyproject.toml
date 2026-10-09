@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdsim"
+version = "0.2.0"
+description = "Molecular dynamics of small-molecule mixtures in a periodic box"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.15",
+    "numba>=0.60",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+mdsim = "mdsim.cli:main"
+
+[tool.setuptools.package-data]
+mdsim = ["data/molecules/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+filterwarnings = ["ignore:FigureCanvasAgg is non-interactive"]
+
+[tool.ruff]
+line-length = 80
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "NPY"]

@@ -1,7 +1,14 @@
-# Ignore trajectories directories
+# Simulation output
 trajectories/
 trajectories.zip
 
-
-# Ignore __pycache__ directories
+# Python
 __pycache__/
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Tools
+.pytest_cache/
+.ruff_cache/

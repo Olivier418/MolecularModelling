@@ -1,0 +1,68 @@
+# Default simulation settings. Every setting is optional: anything left out
+# falls back to the value shown here. Units: nm, ps, K, kJ/mol.
+# Relative paths are relative to this file.
+
+# Random seed for reproducible runs. Without it, every run is different.
+# seed = 0
+
+[system]
+# Edge length of the cubic periodic box (nm)
+boxsize = 4.0
+# Relative amounts of each molecule; normalised, so any positive scale works.
+# Available: Water, Ethanol, Oxygen, Hydrogen.
+weights = { Water = 1.0, Ethanol = 1.0 }
+# Random offset of molecules from their grid points, in grid spacings
+# (between -0.5 and 0.5)
+random_grid_offset = 0.0
+# Soft start: before the run, push LJ pairs apart until none is closer than
+# this many sigma. Lower values risk instability, higher values increase the
+# setup time. Recommended: 0.5-0.7. Remove the line to skip it (unsafe).
+r_threshold_scalar = 0.65
+# Folder with <Name>.xyz and <Name>.itp files (default: the built-in ones)
+# molecule_dir = "../my_molecules"
+
+[integration]
+# euler, verlet, velocity_verlet or beeman
+method = "velocity_verlet"
+dt = 0.001              # time step (ps)
+end_time = 200.0        # total simulated time (ps)
+save_steps = 100        # save measurements every this many steps
+initial_temp = 298.15   # initial temperature (K)
+temp_control = true     # rescale velocities to initial_temp every step
+
+[lennard_jones]
+# Set exactly one of these two.
+# Cutoff distance as a multiple of sigma. 0 disables LJ, inf includes all
+# (minimum-image) pairs. Typically 2 or 2.5.
+r_cutoff_scalar = 2.0
+# Alternatively: neglect LJ forces smaller than this (kJ/mol/nm). 0 includes
+# all pairs, inf disables LJ. Typically between 0 and 0.1.
+# f_threshold = 0.05
+
+[output]
+directory = "../trajectories"
+# Open each figure in a window (blocks until closed). Figures are always
+# saved to the output folder.
+show_plots = true
+vmd_path = "C:/Program Files/VMD/vmd.exe"
+
+[plots]
+energy = true
+temperature = true
+phase_space = true
+computation_time = true
+rdf = true
+vmd = false             # open the trajectory in VMD at the end
+
+[phase_space]
+# Bond types to plot: "<atom>-<atom> (<molecule>)"
+bonds = ["O-H (Water)", "O-H (Ethanol)", "C-O (Ethanol)", "C-H (Ethanol)",
+         "O-O (Oxygen)"]
+
+[rdf]
+# Pairs to plot: "<atom>~<atom> (<molecule>~<molecule>)", where the first
+# atom belongs to the first molecule.
+pairs = ["O~H (Water~Ethanol)", "O~H (Ethanol~Ethanol)", "O~H (Water~Water)",
+         "O~O (Water~Water)", "O~O (Water~Ethanol)", "O~O (Ethanol~Ethanol)"]
+thin = 1.0              # fraction of pairs to sample (0 < thin <= 1)
+dr = 0.005              # histogram bin width (nm)

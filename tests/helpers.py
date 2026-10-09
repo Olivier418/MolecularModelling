@@ -1,10 +1,35 @@
-"""Shared fixtures for the tests: random molecules and small real systems."""
+"""Shared fixtures for the tests: small topologies and helpers."""
 import numpy as np
 
-from auxiliary import compute_LJ_indices, find_bond_indices
-from parse_functions import itp_to_data, xyz_to_array
+from mdsim.constants import MOLECULE_DIR
+from mdsim.forcefield import ForceField
+from mdsim.system import Topology, load_molecule
 
 MASSES = {"H": 1.00784, "C": 12.011, "O": 15.999}
+
+
+def make_topology(n, **arrays):
+    """A single-molecule topology of n atoms; missing data is empty/zero."""
+    defaults = dict(
+        atoms=np.full(n, "H"), masses=np.ones(n), epsilon=np.zeros(n),
+        sigma=np.zeros(n), bonds=np.zeros((0, 2), int), kb=np.zeros(0),
+        r0=np.zeros(0), angles=np.zeros((0, 3), int), ktheta=np.zeros(0),
+        theta0=np.zeros(0), dihedrals=np.zeros((0, 4), int),
+        C=np.zeros((0, 4)), molec_index=np.zeros(n, int),
+        molec_names=np.full(n, "Test"))
+    defaults.update(arrays)
+    return Topology(**defaults)
+
+
+def forcefield(topology, boxsize=0., r_cutoff_scalar=np.inf):
+    """ForceField without periodic boundaries (boxsize=0) by default."""
+    return ForceField(topology, boxsize, r_cutoff_scalar=r_cutoff_scalar)
+
+
+def forces_and_energy(ff, x):
+    """Total force and potential energy at positions x."""
+    result = ff.compute(x)
+    return result.forces, sum(ff.energies(result).values())
 
 
 # ----------------------------- Random molecules ------------------------------
@@ -43,75 +68,26 @@ def paths_of_length(edges, n, length):
 
 
 def random_molecule(n, rng):
-    """A random nonsense molecule: random topology, random parameters and no
-    LJ interactions. Does not respect valency."""
+    """Positions and topology of a random nonsense molecule: random topology,
+    random parameters and no LJ interactions. Does not respect valency."""
     edges = random_connected_graph(n, rng)
     bonds = paths_of_length(edges, n, 2)
     angles = paths_of_length(edges, n, 3)
     dihedrals = paths_of_length(edges, n, 4)
-
     atoms = rng.choice(list(MASSES), size=n)
-    return dict(
-        x=rng.random((n, 3)),
-        atoms=atoms,
-        masses=np.array([MASSES[a] for a in atoms]),
-        bonds=bonds,
-        kb=rng.random(len(bonds)),
-        r0=rng.random(len(bonds)),
-        angles=angles,
-        ktheta=rng.random(len(angles)),
-        theta0=rng.random(len(angles)),
-        dihedrals=dihedrals,
-        C1=np.zeros(len(dihedrals)),
-        C2=np.zeros(len(dihedrals)),
-        C3=np.zeros(len(dihedrals)),
-        C4=np.zeros(len(dihedrals)),
-    )
+    topology = make_topology(
+        n, atoms=atoms, masses=np.array([MASSES[a] for a in atoms]),
+        bonds=bonds, kb=rng.random(len(bonds)), r0=rng.random(len(bonds)),
+        angles=angles, ktheta=rng.random(len(angles)),
+        theta0=rng.random(len(angles)), dihedrals=dihedrals,
+        C=np.zeros((len(dihedrals), 4)))
+    return rng.random((n, 3)), topology
 
 
 # ------------------------------ Real molecules -------------------------------
-def load_molecule(name):
-    """Positions and itp data of one molecule from molecule_data/."""
-    _, x = xyz_to_array(f"molecule_data/{name}.xyz")
-    (bonds, kb, r0, angles, ktheta, theta0, epsilon, sigma, dihedrals,
-     C1, C2, C3, C4, masses) = itp_to_data(f"molecule_data/{name}.itp")
-    return dict(x=x.astype(float), bonds=bonds, kb=kb, r0=r0, angles=angles,
-                ktheta=ktheta, theta0=theta0, epsilon=epsilon, sigma=sigma,
-                dihedrals=dihedrals, C1=C1, C2=C2, C3=C3, C4=C4,
-                masses=masses)
-
-
-def combine(molecules, shifts):
-    """Concatenate molecules into one system, shifting each by a vector."""
-    out = {}
-    offset = 0
-    for mol, shift in zip(molecules, shifts):
-        n = len(mol["masses"])
-        for key, val in mol.items():
-            if key == "x":
-                val = val + np.asarray(shift)
-            elif key in ("bonds", "angles", "dihedrals"):
-                val = val + offset
-            out.setdefault(key, []).append(val)
-        out.setdefault("molec_index", []).append(np.full(n, len(out["x"]) - 1))
-        offset += n
-    return {key: np.concatenate(val) for key, val in out.items()}
-
-
 def water_ethanol_pair():
     """One water and one ethanol molecule, close enough to interact via LJ."""
-    system = combine([load_molecule("Water"), load_molecule("Ethanol")],
-                     [(0.0, 0.0, 0.0), (0.45, 0.1, -0.05)])
-    n = len(system["masses"])
-    i_LJ, j_LJ = compute_LJ_indices(n, system["bonds"], system["angles"],
-                                    system["dihedrals"], system["epsilon"],
-                                    system["sigma"])
-    system["i_LJ"], system["j_LJ"] = i_LJ, j_LJ
-    system["sigma_LJ"] = 0.5 * (system["sigma"][i_LJ] + system["sigma"][j_LJ])
-    system["epsilon_LJ"] = np.sqrt(system["epsilon"][i_LJ]
-                                   * system["epsilon"][j_LJ])
-    system["angle_mapping"] = find_bond_indices(system["angles"],
-                                                system["bonds"])
-    system["dihedral_mapping"] = find_bond_indices(system["dihedrals"],
-                                                   system["bonds"])
-    return system
+    x_w, water = load_molecule("Water", MOLECULE_DIR)
+    x_e, ethanol = load_molecule("Ethanol", MOLECULE_DIR)
+    x = np.vstack([x_w, x_e + np.array([0.45, 0.1, -0.05])]).astype(float)
+    return x, Topology.concatenate([water, ethanol])
