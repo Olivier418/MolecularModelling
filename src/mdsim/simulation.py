@@ -5,7 +5,6 @@ from pathlib import Path
 
 import numpy as np
 
-from .energy import kinetic_energy
 from .forcefield import ForceField
 from .geometry import wrap_molecules
 from .integrators import METHODS, euler, initial_state, step
@@ -104,6 +103,10 @@ def run(config):
                     for name in ("Bond", "Angular", "LJ", "Dihedral")}
     if config.energy_graph or config.temp_graph:
         kinetic = np.empty(nr_saves)
+
+    # Energies are computed alongside the forces, on save steps only
+    def compute_with_energy(x):
+        return forcefield.compute(x, compute_energy=config.energy_graph)
     if config.phase_space_diagram:
         print("  Initializing phase space...")
         phase_space = PhaseSpace(topology, config.bonds_of_interest, nr_saves)
@@ -112,8 +115,7 @@ def run(config):
         rdf = RDF(topology, config.pairs_of_interest, config.boxsize,
                   config.RDF_thin, config.RDF_dr, nr_saves, rng)
 
-    timings = {"Writing XYZ": 0., "RDF": 0., "Energy": 0., "Temperature": 0.,
-               "PS diag": 0.}
+    timings = {"Writing XYZ": 0., "RDF": 0., "PS diag": 0.}
 
     @contextmanager
     def timed(label):
@@ -127,12 +129,10 @@ def run(config):
             with timed("RDF"):
                 rdf.record(save_idx, state.x)
         if config.energy_graph:
-            with timed("Energy"):
-                for name, value in forcefield.energies(result).items():
-                    energies[name][save_idx] = value
+            for name, value in result.energies.items():
+                energies[name][save_idx] = value
         if config.energy_graph or config.temp_graph:
-            with timed("Temperature"):
-                kinetic[save_idx] = kinetic_energy(masses, state.v)
+            kinetic[save_idx] = state.KE
         # Always save the positions, after projecting them into the box.
         with timed("Writing XYZ"):
             write_xyz(trajectory, wrap_molecules(state.x, topology.molec_index,
@@ -140,22 +140,24 @@ def run(config):
                       topology.atoms, t)
         if config.phase_space_diagram:
             with timed("PS diag"):
-                phase_space.record(save_idx, result)
+                phase_space.record(save_idx, result, state.v)
 
     print("Starting integration...")
     forcefield.timings = dict.fromkeys(forcefield.timings, 0.)
     start = time.perf_counter()
     v = initial_velocities(masses, config.initial_temp, rng)
     temp = config.initial_temp if config.temp_control else None
-    state, result = initial_state(x, v, forcefield.compute, masses)
+    state, result = initial_state(x, v, compute_with_energy, masses)
     progress = ProgressBar(timesteps)
     with open(folder / "INTEGRATED.xyz", "w") as trajectory:
         save(0, state, result, trajectory, 0)
         for i in range(1, timesteps + 1):
+            saving = i % save_steps == 0
             # The first step has no history yet, so it is always Euler
             state, result = step(euler if i == 1 else method, state,
-                                 forcefield.compute, masses, dt, temp)
-            if i % save_steps == 0:
+                                 compute_with_energy if saving
+                                 else forcefield.compute, masses, dt, temp)
+            if saving:
                 save(i // save_steps, state, result, trajectory, i * dt)
             progress.update(i)
     progress.finish()
@@ -176,7 +178,7 @@ def run(config):
     if config.phase_space_diagram:
         ps_folder = folder / "ps_diagram"
         ps_folder.mkdir(exist_ok=True)
-        phase_space_plots(phase_space, save_interval, ps_folder, show)
+        phase_space_plots(phase_space, ps_folder, show)
     if config.comptime_vis:
         computation_piechart({**forcefield.timings, **timings}, total_time,
                              timesteps, folder, show)

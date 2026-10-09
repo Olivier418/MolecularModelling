@@ -2,10 +2,9 @@ import numpy as np
 import pytest
 
 from mdsim.constants import KBOLTZ
-from mdsim.energy import kinetic_energy
 from mdsim.integrators import (METHODS, State, beeman, euler, initial_state,
                                step, velocity_verlet, verlet)
-from mdsim.system import initial_velocities
+from mdsim.system import initial_velocities, kinetic_energy
 
 from helpers import (forcefield, forces_and_energy, random_molecule,
                      water_ethanol_pair)
@@ -86,3 +85,15 @@ def test_temperature_control_holds_temperature(method):
     KE = np.mean([kinetic_energy(t.masses, v) for v in v_fd])
     T = 2 * KE / (3 * len(t.masses) * KBOLTZ)
     assert abs(T - target) < 0.1 * target
+
+
+@pytest.mark.parametrize("temp", [None, 300.])
+def test_state_kinetic_energy_matches_velocities(temp):
+    x, t = water_ethanol_pair()
+    v0 = initial_velocities(t.masses, 900., np.random.default_rng(0))
+    for state in _run(velocity_verlet, forcefield(t), x, v0, 0.0005, 5, temp):
+        np.testing.assert_allclose(state.KE, kinetic_energy(t.masses, state.v),
+                                   rtol=1e-12)
+    if temp is not None:
+        T = 2 * state.KE / (3 * len(t.masses) * KBOLTZ)
+        np.testing.assert_allclose(T, temp, rtol=1e-12)

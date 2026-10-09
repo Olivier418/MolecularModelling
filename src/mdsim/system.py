@@ -170,10 +170,15 @@ def build_system(boxsize, random_grid_offset, weights, molecule_dir, rng):
 
 
 # ------------------------- Initial velocities --------------------------------
-def velocity_scale(v, masses, temp):
-    """Factor by which to scale velocities to reach temperature temp."""
-    KE = 0.5 * np.dot(masses, np.sum(v**2, axis=1))
-    Nf = 3 * len(masses)
+def kinetic_energy(masses, v):
+    """Total kinetic energy (kJ/mol)."""
+    return 0.5 * np.dot(masses, np.sum(v**2, axis=1))
+
+
+def temperature_scale(KE, nr_atoms, temp):
+    """Factor by which to scale velocities with kinetic energy KE such that
+    the system reaches temperature temp."""
+    Nf = 3 * nr_atoms
     return np.sqrt(temp * Nf * KBOLTZ / (2 * KE))
 
 
@@ -183,4 +188,4 @@ def initial_velocities(masses, temp, rng):
     system a chosen temperature.
     """
     v = rng.normal(0, 1, (len(masses), 3))
-    return v * velocity_scale(v, masses, temp)
+    return v * temperature_scale(kinetic_energy(masses, v), len(masses), temp)

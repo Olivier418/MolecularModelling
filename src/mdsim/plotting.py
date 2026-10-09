@@ -75,13 +75,11 @@ def energy_plot(energies, save_interval, folder_name, show=False):
 
 
 # ------------------------- phase space diagram functions ---------------------
-def phase_space_plots(phase_space, save_interval, folder_name, show=False):
+def phase_space_plots(phase_space, folder_name, show=False):
     """Creates a phase space diagram (bond length against its rate of change)
     for each tracked bond type."""
-    for name, dist_data in zip(phase_space.names, phase_space.distances):
-        # Compute V by finite differences (index D and V to equal lengths)
-        V = np.diff(dist_data, axis=0) / save_interval
-        D = dist_data[1:]
+    for name, D, V in zip(phase_space.names, phase_space.distances,
+                          phase_space.velocities):
         nr_trajectories = D.shape[1]
 
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -91,8 +89,8 @@ def phase_space_plots(phase_space, save_interval, folder_name, show=False):
         lc.set_array(np.linspace(0, 1, nr_trajectories))
         ax.add_collection(lc)
 
-        ax.set_xlabel('Bond Distance (D)')
-        ax.set_ylabel('Bond Velocity (V)')
+        ax.set_xlabel('Bond length D (nm)')
+        ax.set_ylabel('Bond velocity dD/dt (nm/ps)')
         # Set axis limits to properly view the trajectory.
         for set_lim, data in ((ax.set_xlim, D), (ax.set_ylim, V)):
             margin = 0.05 * (data.max() - data.min())

@@ -20,7 +20,8 @@ def _parse_species_pair(entry, separator):
 
 # ------------------------------ Phase space ----------------------------------
 class PhaseSpace:
-    """Tracks the length of every bond of the requested types."""
+    """Tracks the length of every bond of the requested types, and its rate
+    of change dD/dt = (v_i - v_j) . (x_i - x_j) / D."""
 
     def __init__(self, topology, bonds_of_interest, nr_saves):
         t = topology
@@ -28,6 +29,7 @@ class PhaseSpace:
         bond_atoms = np.sort(np.column_stack((t.atoms[a], t.atoms[b])), axis=1)
         bond_molecs = t.molec_names[a]
 
+        self.bonds = t.bonds
         self.names, self.masks = [], []
         for entry in dict.fromkeys(bonds_of_interest):
             (atom1, molecule), (atom2, _) = _parse_species_pair(entry, '-')
@@ -38,10 +40,14 @@ class PhaseSpace:
                 self.names.append(f"{atom1}~{atom2} ({molecule})")
                 self.masks.append(mask)
         self.distances = [np.empty((nr_saves, m.sum())) for m in self.masks]
+        self.velocities = [np.empty((nr_saves, m.sum())) for m in self.masks]
 
-    def record(self, save_idx, result):
-        for data, mask in zip(self.distances, self.masks):
-            data[save_idx] = result.D_bonds[mask]
+    def record(self, save_idx, result, v):
+        dv = v[self.bonds[:, 0]] - v[self.bonds[:, 1]]
+        bond_velocity = np.sum(dv * result.diff_bonds, axis=1) / result.D_bonds
+        for k, mask in enumerate(self.masks):
+            self.distances[k][save_idx] = result.D_bonds[mask]
+            self.velocities[k][save_idx] = bond_velocity[mask]
 
 
 # ---------------------------------- RDF --------------------------------------

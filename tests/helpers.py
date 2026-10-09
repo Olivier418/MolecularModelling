@@ -28,8 +28,8 @@ def forcefield(topology, boxsize=0., r_cutoff_scalar=np.inf):
 
 def forces_and_energy(ff, x):
     """Total force and potential energy at positions x."""
-    result = ff.compute(x)
-    return result.forces, sum(ff.energies(result).values())
+    result = ff.compute(x, compute_energy=True)
+    return result.forces, sum(result.energies.values())
 
 
 # ----------------------------- Random molecules ------------------------------

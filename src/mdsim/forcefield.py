@@ -1,4 +1,6 @@
-"""Force field setup (LJ pairs, mixing rules, cutoffs) and evaluation."""
+"""Force field setup (LJ pairs, mixing rules, cutoffs) and evaluation of
+forces and energies. Each term computes its geometry once and returns its
+force contributions per atom, plus its energy when asked."""
 import time
 from dataclasses import dataclass
 from itertools import permutations
@@ -6,20 +8,21 @@ from itertools import permutations
 import numpy as np
 from scipy.optimize import brentq
 
-from .energy import angular_energy, bond_energy, dihedral_energy, LJ_energy
-from .forces import net_force
-from .geometry import map_to_bonds, pair_vectors
+from .geometry import (angle_geometry, dihedral_geometry, map_to_bonds,
+                       pair_vectors)
 
 
 @dataclass
 class ForceResult:
     """Forces at a configuration, with the bond and LJ vectors computed on
-    the way (reused for energies and measurements)."""
+    the way (reused for measurements). energies maps each potential energy
+    term to its value if it was requested, else it is None."""
     forces: np.ndarray
     diff_bonds: np.ndarray
     D_bonds: np.ndarray
     diff_LJ: np.ndarray
     D_LJ: np.ndarray
+    energies: dict | None = None
 
 
 # -------------------------------- LJ setup -----------------------------------
@@ -99,6 +102,96 @@ def lj_cutoffs(r_cutoff_scalar, f_threshold, epsilon_LJ, sigma_LJ, boxsize):
     return r_cutoff
 
 
+# ------------------------------- Force terms ---------------------------------
+# Each term returns (atom indices, force vectors, energy). The force on atom
+# idx[k] gets vec[k] added; energy is None unless compute_energy is True.
+
+def bond_term(diff_bonds, D_bonds, bonds, kb, r0, compute_energy):
+    """Harmonic bonds: E = 1/2 kb (D - r0)^2."""
+    F = (kb * (r0 - D_bonds) / D_bonds)[:, None] * diff_bonds
+    energy = 0.5 * np.dot(kb, (D_bonds - r0)**2) if compute_energy else None
+    return (bonds[:, 0], bonds[:, 1]), (F, -F), energy
+
+
+def angle_term(diff_bonds, D_bonds, angle_mapping, angles, ktheta, theta0,
+               compute_energy):
+    """Harmonic angles: E = 1/2 ktheta (theta - theta0)^2."""
+    A, B, D_left, D_right, theta = angle_geometry(diff_bonds, D_bonds,
+                                                  angle_mapping)
+    # Force magnitude per angle
+    Fr = ktheta * (theta0 - theta)
+
+    # Directions in the plane of the angle, perpendicular to each bond
+    n = np.cross(A, B)
+    vec1 = np.cross(n, A)
+    vec2 = np.cross(B, n)
+    vec1 /= np.linalg.norm(vec1, axis=1)[:, None]
+    vec2 /= np.linalg.norm(vec2, axis=1)[:, None]
+    vec1 *= (Fr / D_left)[:, None]
+    vec2 *= (Fr / D_right)[:, None]
+
+    energy = (0.5 * np.dot(ktheta, (theta - theta0)**2) if compute_energy
+              else None)
+    return ((angles[:, 1], angles[:, 0], angles[:, 2]),
+            (vec1 + vec2, -vec1, -vec2), energy)
+
+
+def dihedral_term(diff_bonds, D_bonds, dihedral_mapping, dihedrals, C,
+                  compute_energy):
+    """Ryckaert-Bellemans dihedrals:
+    E = 1/2 (C1 (1 + cos t) + C2 (1 - cos 2t) + C3 (1 + cos 3t)
+             + C4 (1 - cos 4t))."""
+    g = dihedral_geometry(diff_bonds, D_bonds, dihedral_mapping)
+    C1, C2, C3, C4 = C.T
+    theta = g.theta
+
+    # Precalculate the big factor
+    sin_terms = (C1 * np.sin(theta) - 2 * C2 * np.sin(2 * theta)
+                 + 3 * C3 * np.sin(3 * theta) - 4 * C4 * np.sin(4 * theta))
+
+    # Calculate fa and fd
+    fa = (0.5 * sin_terms / (g.D_ab * np.sin(g.theta1)))[:, None] * g.p1
+    fd = (0.5 * sin_terms / (g.D_cd * np.sin(g.theta2)))[:, None] * g.p2
+
+    # Force on c using intermediate o and t
+    oc = 0.5 * g.diff_bc
+    tc = -(np.cross(oc, fd) + 0.5 * np.cross(g.diff_cd, fd)
+           + 0.5 * np.cross(-g.diff_ab, fa))
+    fc = 4 / (g.D_bc**2)[:, None] * np.cross(tc, oc)
+
+    energy = None
+    if compute_energy:
+        energy = np.sum(0.5 * (C1 * (1 + np.cos(theta))
+                               + C2 * (1 - np.cos(2 * theta))
+                               + C3 * (1 + np.cos(3 * theta))
+                               + C4 * (1 - np.cos(4 * theta))))
+    # The force on b follows from Newton's third law
+    return (tuple(dihedrals.T), (fa, -fa - fc - fd, fc, fd), energy)
+
+
+def LJ_term(diff_LJ, D_LJ, epsilon_LJ, sigma_LJ, i_LJ, j_LJ, r_cutoff_LJ,
+            cap, compute_energy):
+    """Lennard-Jones: E = 4 eps ((sig/D)^12 - (sig/D)^6) for pairs within
+    their cutoff. If cap is given, the force at D < cap is the force at cap
+    (used to push overlapping atoms apart gently)."""
+    # Extract relevant data for pairs within the cutoff
+    valid = D_LJ < r_cutoff_LJ
+    D = D_LJ[valid]
+    EPS = epsilon_LJ[valid]
+    SIG = sigma_LJ[valid]
+
+    D_force = D if cap is None else np.maximum(D, cap[valid])
+    SIGovrD6 = (SIG / D_force)**6
+    F_scalar = 24 * EPS * (2 * SIGovrD6**2 - SIGovrD6) / D_force
+    F = (F_scalar / D_force)[:, None] * diff_LJ[valid]
+
+    energy = None
+    if compute_energy:
+        SIGovrD6 = (SIG / D)**6
+        energy = np.sum(4 * EPS * (SIGovrD6**2 - SIGovrD6))
+    return (i_LJ[valid], j_LJ[valid]), (F, -F), energy
+
+
 # ------------------------------- Force field ---------------------------------
 class ForceField:
     """Precomputes everything constant about the interactions of a topology,
@@ -128,8 +221,9 @@ class ForceField:
         # Accumulated computation time (s), for the computation time chart
         self.timings = {"Diff & Dist": 0., "Forces": 0.}
 
-    def compute(self, x, cap_scalar=None):
-        """Forces at positions x. If cap_scalar is set, LJ distances below
+    def compute(self, x, compute_energy=False, cap_scalar=None):
+        """Forces at positions x, and the potential energy per term if
+        compute_energy. If cap_scalar is set, LJ distances below
         cap_scalar * sigma are treated as that distance (soft start)."""
         t = self.topology
         t0 = time.perf_counter()
@@ -137,26 +231,32 @@ class ForceField:
                                            0.)
         diff_LJ, D_LJ = pair_vectors(x, self.i_LJ, self.j_LJ, self.boxsize)
         t1 = time.perf_counter()
+
         cap = None if cap_scalar is None else cap_scalar * self.sigma_LJ
-        F = net_force(diff_bonds, D_bonds, diff_LJ, D_LJ, t.bonds,
-                      t.nr_atoms, self.angle_mapping, self.dihedral_mapping,
-                      t.kb, t.r0, t.angles, t.ktheta, t.theta0,
-                      self.epsilon_LJ, self.sigma_LJ, t.dihedrals, *t.C.T,
-                      self.i_LJ, self.j_LJ, self.r_cutoff_LJ, cap)
+        terms = {
+            "Bond": bond_term(diff_bonds, D_bonds, t.bonds, t.kb, t.r0,
+                              compute_energy),
+            "Angular": angle_term(diff_bonds, D_bonds, self.angle_mapping,
+                                  t.angles, t.ktheta, t.theta0,
+                                  compute_energy),
+            "LJ": LJ_term(diff_LJ, D_LJ, self.epsilon_LJ, self.sigma_LJ,
+                          self.i_LJ, self.j_LJ, self.r_cutoff_LJ, cap,
+                          compute_energy),
+            "Dihedral": dihedral_term(diff_bonds, D_bonds,
+                                      self.dihedral_mapping, t.dihedrals,
+                                      t.C, compute_energy),
+        }
+
+        # Scatter the force contributions to the atoms
+        F = np.zeros((t.nr_atoms, 3))
+        for indices, vectors, _ in terms.values():
+            for idx, vec in zip(indices, vectors):
+                np.add.at(F, idx, vec)
         t2 = time.perf_counter()
         self.timings["Diff & Dist"] += t1 - t0
         self.timings["Forces"] += t2 - t1
-        return ForceResult(F, diff_bonds, D_bonds, diff_LJ, D_LJ)
 
-    def energies(self, result):
-        """Potential energy per term at the configuration of a ForceResult."""
-        t = self.topology
-        return {
-            "Bond": bond_energy(result.D_bonds, t.kb, t.r0),
-            "Angular": angular_energy(result.diff_bonds, result.D_bonds,
-                                      self.angle_mapping, t.ktheta, t.theta0),
-            "LJ": LJ_energy(result.D_LJ, self.epsilon_LJ, self.sigma_LJ,
-                            self.r_cutoff_LJ),
-            "Dihedral": dihedral_energy(result.diff_bonds, result.D_bonds,
-                                        self.dihedral_mapping, *t.C.T),
-        }
+        energies = None
+        if compute_energy:
+            energies = {name: energy for name, (_, _, energy) in terms.items()}
+        return ForceResult(F, diff_bonds, D_bonds, diff_LJ, D_LJ, energies)

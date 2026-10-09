@@ -4,7 +4,7 @@ from typing import Callable
 
 import numpy as np
 
-from .system import velocity_scale
+from .system import kinetic_energy, temperature_scale
 
 
 # --------------------------- Integrator Functions ----------------------------
@@ -56,12 +56,13 @@ METHODS = {m.name: m for m in (euler, verlet, velocity_verlet, beeman)}
 @dataclass
 class State:
     """Positions, velocities and accelerations at the current step (x, v, a)
-    and the previous step (x_prev, a_prev)."""
+    and the previous step (x_prev, a_prev), and the kinetic energy KE."""
     x: np.ndarray
     v: np.ndarray
     a: np.ndarray
     x_prev: np.ndarray
     a_prev: np.ndarray
+    KE: float | None = None
 
 
 def initial_state(x, v, compute_forces, masses):
@@ -69,7 +70,7 @@ def initial_state(x, v, compute_forces, masses):
     only Euler (used for the first step) can handle."""
     result = compute_forces(x)
     a = result.forces / masses[:, None]
-    return State(x, v, a, x, a), result
+    return State(x, v, a, x, a, kinetic_energy(masses, v)), result
 
 
 def step(method, state, compute_forces, masses, dt, temp=None):
@@ -84,13 +85,15 @@ def step(method, state, compute_forces, masses, dt, temp=None):
     a = result.forces / masses[:, None]
     v = method.velocities(x, s.x, s.x_prev, s.v, a, s.a, s.a_prev, dt)
     x_prev = s.x
+    KE = kinetic_energy(masses, v)
 
     # Optional: Temperature scaling
     if temp is not None:
-        scale = velocity_scale(v, masses, temp)
+        scale = temperature_scale(KE, len(masses), temp)
         v = scale * v
+        KE *= scale**2
         # Verlet has no explicit velocity: rescale the last displacement
         if method is verlet:
             x_prev = x - scale * (x - x_prev)
 
-    return State(x, v, a, x_prev, s.a), result
+    return State(x, v, a, x_prev, s.a, KE), result

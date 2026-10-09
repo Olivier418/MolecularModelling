@@ -113,6 +113,23 @@ def test_phase_space_tracks_requested_bonds():
     x, t = water_ethanol_pair()
     ps = PhaseSpace(t, ["O-H (Water)", "C-C (Ethanol)", "O-O (Oxygen)"], 1)
     assert ps.names == ["H~O (Water)", "C~C (Ethanol)"]
-    ps.record(0, forcefield(t).compute(x))
+    ps.record(0, forcefield(t).compute(x), np.zeros_like(x))
     expected = np.linalg.norm(x[[1, 2]] - x[0], axis=1)  # water O-H bonds
     np.testing.assert_allclose(ps.distances[0][0], expected, atol=1e-12)
+    np.testing.assert_array_equal(ps.velocities[0][0], 0)
+
+
+def test_phase_space_velocity_is_rate_of_change_of_bond_length():
+    x, t = water_ethanol_pair()
+    v = np.random.default_rng(0).normal(0, 1, x.shape)
+    ff = forcefield(t)
+    ps = PhaseSpace(t, ["O-H (Water)", "C-H (Ethanol)"], 1)
+    ps.record(0, ff.compute(x), v)
+
+    h = 1e-7
+    later = PhaseSpace(t, ["O-H (Water)", "C-H (Ethanol)"], 1)
+    later.record(0, ff.compute(x + h * v), v)
+    for k in range(2):
+        finite_difference = (later.distances[k][0] - ps.distances[k][0]) / h
+        np.testing.assert_allclose(ps.velocities[k][0], finite_difference,
+                                   rtol=1e-5)

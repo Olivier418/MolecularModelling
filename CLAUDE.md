@@ -22,17 +22,17 @@ constants.py      KBOLTZ, AVOGADRO, MOLAR_VOLUMES (needed per molecule!), MOLECU
 data/molecules/   <Name>.xyz + <Name>.itp per molecule
 io.py             read_xyz / write_xyz(open file, ...) / read_itp → dict / write_itp(topology)
 system.py         Topology dataclass (+ replicate/concatenate), load_molecule, build_system (grid
-                  placement), orient_molecule, initial_velocities, velocity_scale
-geometry.py       pair_vectors (@njit, minimum image if boxsize≠0), map_to_bonds, wrap_molecules
-forcefield.py     lj_pairs (exclusions), lj_cutoffs, ForceField(topology, boxsize, ...)
-                  .compute(x, cap_scalar=None) → ForceResult(forces, diff/D for bonds and LJ)
-                  .energies(result) → {"Bond","Angular","LJ","Dihedral"}; .timings
-forces.py         bond_force, ang_force, LJ_force, dihedral_force, net_force (raw kernels)
-energy.py         matching energy kernels + kinetic_energy
+                  placement), orient_molecule, initial_velocities, kinetic_energy, temperature_scale
+geometry.py       pair_vectors (@njit, minimum image if boxsize≠0), map_to_bonds,
+                  angle_geometry, dihedral_geometry (shared by forces and energies), wrap_molecules
+forcefield.py     lj_pairs (exclusions), lj_cutoffs; bond/angle/dihedral/LJ_term → (atom indices,
+                  force vectors, energy|None); ForceField(topology, boxsize, ...)
+                  .compute(x, compute_energy=False, cap_scalar=None) → ForceResult(forces, diff/D
+                  for bonds and LJ, energies {"Bond","Angular","LJ","Dihedral"} | None); .timings
 integrators.py    Method(positions, velocities) records: euler, verlet, velocity_verlet, beeman;
-                  METHODS by name; State(x, v, a, x_prev, a_prev); initial_state; step
+                  METHODS by name; State(x, v, a, x_prev, a_prev, KE); initial_state; step
 simulation.py     output_folder, soft_start, run(config): build → soft start → loop → plots
-observables.py    PhaseSpace, RDF recorders (record() on save steps)
+observables.py    PhaseSpace (bond length + exact dD/dt from velocities), RDF recorders
 plotting.py       energy/temperature/phase-space/RDF gifs/computation pie chart (show flag)
 vmd.py            launches VMD with a generated Tcl script
 progress.py       ProgressBar (redraws only when the % changes)
@@ -45,6 +45,7 @@ Key representations:
 - Positions are **not** wrapped during integration. `wrap_molecules` wraps whole molecules, and only when writing xyz. Bonds use `boxsize=0` (no minimum image); LJ and RDF use minimum image.
 - `step(..., temp=T)` is the thermostat: it rescales v every step. For Verlet it rescales `x_prev` instead, because Verlet has no explicit velocity.
 - The first step is always Euler (`initial_state` sets `x_prev = x`).
+- Energies are only computed on save steps: `simulation.run` passes a `compute_energy=True` force function to `step` there. `State.KE` is computed once per step, and the thermostat reuses it.
 - All randomness flows from one `np.random.default_rng(config.seed)`.
 
 ## Units (internal)

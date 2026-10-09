@@ -1,4 +1,0 @@
-improvements:
-- dubble KE computation
-- energy / force calculation overlap
-- phase space velocity uit V halen, niet berekenen in vis pa
