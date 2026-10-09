@@ -1,0 +1,7 @@
+# Ignore trajectories directories
+trajectories/
+trajectories.zip
+
+
+# Ignore __pycache__ directories
+__pycache__/
