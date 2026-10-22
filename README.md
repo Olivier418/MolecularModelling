@@ -7,8 +7,8 @@ supervised by Björn Baumeier (submitted February 2025).
 
 ## Authors
 
-- **Olivier Meiler**: wrote most of the simulation code.
-- **Justin Hen**: wrote the project report,
+- **Olivier Meiler**: wrote the simulation code.
+- **Justin Hen**: wrote most of the project report,
   *Simulating Water and Ethanol* ([report.pdf](report.pdf)).
 
 ## About this branch
