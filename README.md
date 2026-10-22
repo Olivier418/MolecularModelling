@@ -38,7 +38,7 @@ and compiled Numba kernels give about 60 ms per step for 8,000 atoms.
 Requires Python 3.11 or newer.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Olivier418/jostle.git
 cd jostle
 pip install -e .[notebook]  # adds JupyterLab; use .[dev] for pytest and ruff
 ```
@@ -108,9 +108,9 @@ jostle started as the final project of the course *Introduction to Molecular
 Modeling and Simulation* (2MMN40) at TU Eindhoven, supervised by Björn
 Baumeier (February 2025):
 
-- **Olivier Meiler**: wrote most of the simulation code.
-- **Justin Hen**: wrote the project report, *Simulating Water and Ethanol*
-  ([docs/report.pdf](docs/report.pdf)).
+- **Olivier Meiler**: wrote the simulation code.
+- **Justin Hen**: wrote most of the project report,
+  *Simulating Water and Ethanol* ([docs/report.pdf](docs/report.pdf)).
 
 The code as submitted for the course is kept on the
 [`course-submission`](../../tree/course-submission) branch, and the report
