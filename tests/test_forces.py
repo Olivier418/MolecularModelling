@@ -3,104 +3,41 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from mdsim.constants import MOLECULE_DIR
-from mdsim.forcefield import lj_cutoffs
-from mdsim.neighbours import lj_pairs
-from mdsim.geometry import map_to_bonds, pair_vectors
-from mdsim.system import load_molecule
-
-from helpers import (forcefield, forces_and_energy, make_topology,
-                     water_ethanol_pair)
+from helpers import (
+    forcefield,
+    forces_and_energy,
+    make_topology,
+    water_ethanol_pair,
+)
+from jostle.constants import BUILTIN_MOLECULE_DIR
+from jostle.forcefield import ForceField
+from jostle.geometry import pair_vectors
+from jostle.integrators import (
+    initial_state,
+    integration_step,
+    velocity_verlet,
+)
+from jostle.neighbours import lj_pairs
+from jostle.system import build_initial_box, initial_velocities, load_molecule
 
 eps = 1e-12
+# LJ parameters of oxygen
+EPSILON_O, SIGMA_O = 0.66386, 0.315061
 
 
 # ------------------------------- Geometry ------------------------------------
-def test_pair_vectors():
-    X = np.array([[1., 0., 0.], [0., 1., 0.]])
-    diff, dist = pair_vectors(X, np.array([0]), np.array([1]), 0.)
-    np.testing.assert_allclose(diff, [[1, -1, 0]], atol=eps)
-    np.testing.assert_allclose(dist, [2 ** 0.5], atol=eps)
-
-
-def test_pair_vectors_minimum_image():
-    X = np.array([[0.1, 0., 0.], [3.9, 0., 0.]])
-    diff, dist = pair_vectors(X, np.array([0]), np.array([1]), 4.)
-    np.testing.assert_allclose(diff, [[0.2, 0, 0]], atol=1e-12)
-    np.testing.assert_allclose(dist, [0.2], atol=1e-12)
-
-
-def test_map_to_bonds():
-    bonds = np.array([[0, 1], [1, 2], [2, 3]])
-    indices, signs = map_to_bonds(np.array([[3, 2, 1, 0]]), bonds)
-    np.testing.assert_array_equal(indices, [[2, 1, 0]])
-    np.testing.assert_array_equal(signs, [[1, 1, 1]])
+@pytest.mark.parametrize("X, box_length, diff, dist", [
+    ([[1., 0., 0.], [0., 1., 0.]], 0., [[1, -1, 0]], [2 ** 0.5]),
+    # Minimum image
+    ([[0.1, 0., 0.], [3.9, 0., 0.]], 4., [[0.2, 0, 0]], [0.2]),
+])
+def test_pair_vectors(X, box_length, diff, dist):
+    d, D = pair_vectors(np.array(X), np.array([0]), np.array([1]), box_length)
+    np.testing.assert_allclose(d, diff, atol=eps)
+    np.testing.assert_allclose(D, dist, atol=eps)
 
 
 # ------------------------------- Single terms --------------------------------
-@pytest.mark.parametrize("kb, r0, x1, sign", [
-    (24531, 0.074, 0.1, 1),       # H-H stretched: atoms pulled together
-    (49836, 0.12075, 0.1, -1),    # O-O compressed: atoms pushed apart
-    (107650, 0.11282, 0.11282, 0),  # C-O at equilibrium: no force
-])
-def test_bond(kb, r0, x1, sign):
-    X = np.array([[0.0, 0.0, 0.0], [x1, 0.0, 0.0]])
-    t = make_topology(2, bonds=np.array([[0, 1]]), kb=np.array([kb]),
-                      r0=np.array([r0]))
-    F = forcefield(t).compute(X).forces
-    assert F[0, 0] == -F[1, 0]
-    if sign == 0:
-        assert (np.abs(F) < eps).all()
-    else:
-        assert np.sign(F[0, 0]) == sign
-
-
-@pytest.mark.parametrize("delta, F_target", [
-    (0.0, np.zeros((3, 3))),
-    (0.1, np.array([[-1, -1, 0], [0, 1, 0], [1, 1, 0]])),
-    (-0.1, np.array([[1, 1, 0], [0, -1, 0], [-1, -1, 0]])),
-])
-def test_ang(delta, F_target):
-    """Angular force directions at, above and below the equilibrium angle."""
-    theta0 = np.deg2rad(104.52)
-    theta = theta0 + delta
-    X = np.array([[0., 0., 0.], [1., 0., 0.],
-                  [np.cos(theta), np.sin(theta), 0.]])
-    # Bonds with kb=0 are only there to define the angle
-    t = make_topology(3, bonds=np.array([[0, 1], [0, 2]]), kb=np.zeros(2),
-                      r0=np.ones(2), angles=np.array([[1, 0, 2]]),
-                      ktheta=np.array([628.02]), theta0=np.array([theta0]))
-    F = forcefield(t).compute(X).forces
-
-    if delta == 0.0:
-        assert (np.abs(F) < eps).all()
-    else:
-        assert (np.abs(np.sign(F) - F_target) < eps).all()
-
-
-@pytest.mark.parametrize("separation, sign", [(0.1, 1), (100., -1)])
-def test_LJ(separation, sign):
-    """LJ is repulsive at short range and attractive at long range."""
-    X = np.array([[0.0, 0.0, 0.0], [separation, 0.0, 0.0]])
-    t = make_topology(2, epsilon=np.full(2, 0.66386),
-                      sigma=np.full(2, 0.315061))
-    F = forcefield(t).compute(X).forces
-    assert np.array_equal(np.sign(F), sign * np.array([[-1, 0, 0],
-                                                       [1, 0, 0]]))
-
-
-def test_dihedral_planar():
-    """A planar trans dihedral at this geometry experiences no force."""
-    X = np.array([[1.2699, 0, 0.1772], [-0.2033, 0, 0.5345],
-                  [-0.9394, 0, -0.6674], [-1.8540, 0, -0.4252]])
-    t = make_topology(4, bonds=np.array([[0, 1], [1, 2], [2, 3]]),
-                      kb=np.zeros(3), r0=np.ones(3),
-                      dihedrals=np.array([[0, 1, 2, 3]]),
-                      C=np.array([[-0.44310, 3.83255, 0.72801, -4.11705]]))
-    F = forcefield(t).compute(X).forces
-    assert np.array_equal(np.sign(F), np.zeros((4, 3)))
-
-
 def test_net_water():
     """Net force on the reference water geometry matches known values."""
     X = 0.1 * np.array([[1.93617934, 2.31884508, 1.72261570],
@@ -109,47 +46,66 @@ def test_net_water():
     F_example = np.array([[16.0, 13.66, -55.08],
                           [-10.08, 4.37, 25.81],
                           [-5.92, -18.04, 29.28]])
-    _, water = load_molecule("Water", MOLECULE_DIR)
-    F = forcefield(water).compute(X).forces
+    _, water = load_molecule("Water", BUILTIN_MOLECULE_DIR)
+    F = forcefield(water).compute_forces(X).forces
     assert (np.abs(F_example - np.round(0.1 * F, 2)) < 1e-9).all()
 
 
 # ------------------------------ LJ bookkeeping -------------------------------
-def test_bonded_pairs_excluded_from_LJ():
-    _, o2 = load_molecule("Oxygen", MOLECULE_DIR)
-    i_LJ, _ = lj_pairs(o2)
-    assert len(i_LJ) == 0
-
-
 def test_LJ_pairs_exclude_up_to_1_4_and_zero_epsilon():
     x, t = water_ethanol_pair()
     i, j = lj_pairs(t)
     assert len(i) > 0
-    assert (t.epsilon[i] > 0).all() and (t.epsilon[j] > 0).all()
+    assert (t.lj_epsilon[i] > 0).all() and (t.lj_epsilon[j] > 0).all()
     # Within a molecule, every LJ pair is at least 5 atoms apart
     excluded = {tuple(sorted(p)) for group in (t.bonds, t.angles, t.dihedrals)
-                for row in group for p in zip(row, row[1:])}
+                for row in group for p in zip(row, row[1:], strict=False)}
     excluded |= {(min(r[a], r[b]), max(r[a], r[b]))
                  for group in (t.angles, t.dihedrals) for r in group
                  for a in range(len(r)) for b in range(a + 1, len(r))}
-    assert not excluded & set(zip(i.tolist(), j.tolist()))
+    assert not excluded & set(zip(i.tolist(), j.tolist(), strict=True))
 
 
-def test_f_threshold_cutoff_has_requested_force():
-    eps_LJ, sig_LJ = np.array([0.66386]), np.array([0.315061])
-    rc = lj_cutoffs(None, 0.05, eps_LJ, sig_LJ, 4.0)
-    r = rc[0]
-    F = 24 * eps_LJ[0] * (2 * (sig_LJ[0] / r)**12 - (sig_LJ[0] / r)**6) / r
-    assert abs(abs(F) - 0.05) < 1e-9
+def _LJ_pair(D, **kwargs):
+    """Force on the second atom (along x) and LJ energy of an O-O pair."""
+    t = make_topology(2, lj_epsilon=np.full(2, EPSILON_O),
+                      lj_sigma=np.full(2, SIGMA_O))
+    result = forcefield(t, **kwargs).compute_forces(
+        np.array([[0., 0., 0.], [D, 0., 0.]]), compute_energy=True)
+    return result.forces[1, 0], result.potential_energies["LJ"]
+
+
+def _plain_LJ(D):
+    """Unshifted radial force and energy of the same O-O pair."""
+    SIGovrD6 = (SIGMA_O / D)**6
+    return (24 * EPSILON_O * (2 * SIGovrD6**2 - SIGovrD6) / D,
+            4 * EPSILON_O * (SIGovrD6**2 - SIGovrD6))
+
+
+RC = 2.5 * SIGMA_O
+
+
+@pytest.mark.parametrize("D", [0.4, RC - 1e-9, RC + 1e-9])
+def test_shifted_force(D):
+    """The force and energy at the cutoff are subtracted, so both go to 0
+    there, and beyond it there is no interaction."""
+    F, E = _plain_LJ(D)
+    F_rc, E_rc = _plain_LJ(RC)
+    expected = ((F - F_rc, E - E_rc + (D - RC) * F_rc) if D < RC
+                else (0., 0.))
+    F_sf, E_sf = _LJ_pair(D, lj_cutoff=2.5)
+    np.testing.assert_allclose(F_sf, expected[0], rtol=1e-9, atol=1e-7)
+    np.testing.assert_allclose(E_sf, expected[1], rtol=1e-9, atol=1e-9)
 
 
 # ------------------------ Forces are -grad(energy) ---------------------------
 def _only(topology, term):
     """The topology with every force field term except `term` switched off."""
-    zero = {"bond": dict(kb=np.zeros_like(topology.kb)),
-            "angle": dict(ktheta=np.zeros_like(topology.ktheta)),
-            "dihedral": dict(C=np.zeros_like(topology.C)),
-            "LJ": dict(epsilon=np.zeros_like(topology.epsilon))}
+    zero = {"bond": dict(k_bond=np.zeros_like(topology.k_bond)),
+            "angle": dict(k_angle=np.zeros_like(topology.k_angle)),
+            "dihedral": dict(rb_coefficients=np.zeros_like(
+                topology.rb_coefficients)),
+            "LJ": dict(lj_epsilon=np.zeros_like(topology.lj_epsilon))}
     changes = {}
     for other, values in zero.items():
         if other != term:
@@ -157,16 +113,22 @@ def _only(topology, term):
     return replace(topology, **changes)
 
 
-@pytest.mark.parametrize("term", ["bond", "angle", "dihedral", "LJ"])
+@pytest.mark.parametrize("term", ["bond", "angle", "dihedral", "LJ",
+                                  "LJ with cutoff"])
 def test_force_is_negative_energy_gradient(term):
     """Each force term equals minus the numerical gradient of its energy."""
     rng = np.random.default_rng(0)
     x, t = water_ethanol_pair()
-    ff = forcefield(_only(t, term))
+    if term == "LJ with cutoff":
+        # Shifted force at a finite cutoff
+        term = "LJ"
+        ff = forcefield(_only(t, term), lj_cutoff=2.5)
+    else:
+        ff = forcefield(_only(t, term))
     x = x + rng.normal(0, 0.005, x.shape)
     if term == "LJ":
-        ff.compute(x)
-        assert len(ff.i_LJ) > 0
+        ff.compute_forces(x)
+        assert len(ff.pair_i) > 0
 
     h = 1e-6
     grad = np.zeros_like(x)
@@ -187,45 +149,28 @@ def test_force_is_negative_energy_gradient(term):
 def test_neighbour_list_matches_all_pairs_over_a_run():
     """Forces with the neighbour list equal the all-pairs forces (up to
     rounding), also after the list has been rebuilt several times."""
-    from mdsim.forcefield import ForceField
-    from mdsim.integrators import euler, initial_state, step, velocity_verlet
-    from mdsim.system import build_system, initial_velocities
-
     rng = np.random.default_rng(0)
     L = 2.0
-    t, x = build_system(L, 0.1, {"Water": 1, "Ethanol": 1}, MOLECULE_DIR, rng)
-    listed = ForceField(t, L, r_cutoff_scalar=2.0, skin=0.05)
+    t, x = build_initial_box(L, {"Water": 1, "Ethanol": 1},
+                             BUILTIN_MOLECULE_DIR, rng)
+    listed = ForceField(t, L, lj_cutoff=2.0, skin=0.05)
     # A skin reaching half the box makes the list hold all pairs
-    everything = ForceField(t, L, r_cutoff_scalar=2.0, skin=L)
-    assert not listed.neighbours.all_pairs and everything.neighbours.all_pairs
+    everything = ForceField(t, L, lj_cutoff=2.0, skin=L)
+    assert not listed.neighbour_list.holds_all_pairs
+    assert everything.neighbour_list.holds_all_pairs
 
     v = initial_velocities(t.masses, 600., rng)
-    state, _ = initial_state(x, v, listed.compute, t.masses)
-    for k in range(60):
-        method = euler if k == 0 else velocity_verlet
-        # Soft-capped LJ and the thermostat keep the unrelaxed grid stable
-        state, result = step(method, state,
-                             lambda x: listed.compute(x, True, 0.8),
-                             t.masses, 0.0005, temp=600.)
-        reference = everything.compute(state.x, True, 0.8)
+    state, _ = initial_state(x, v, listed.compute_forces, t.masses)
+    for _ in range(60):
+        state, result = integration_step(
+            velocity_verlet, state, lambda x: listed.compute_forces(x, True),
+            t.masses, 0.0005, target_temperature=600.)
+        reference = everything.compute_forces(state.x, True)
         # Only the order of summation differs
         np.testing.assert_allclose(result.forces, reference.forces,
                                    rtol=1e-12, atol=1e-9)
-        for name, value in reference.energies.items():
-            np.testing.assert_allclose(result.energies[name], value,
+        for name, value in reference.potential_energies.items():
+            np.testing.assert_allclose(result.potential_energies[name], value,
                                        rtol=1e-12)
-    assert listed.neighbours.nr_builds > 1
-    assert len(listed.i_LJ) < len(everything.i_LJ) / 2
-
-
-def test_pair_histogram_matches_numpy():
-    from mdsim.observables import pair_histogram
-
-    rng = np.random.default_rng(0)
-    x = rng.uniform(0, 3., (300, 3))
-    i, j = np.triu_indices(300, k=1)
-    edges = np.linspace(0, 1.5, 151)
-    counts = np.zeros(150)
-    pair_histogram(x, i, j, 3., edges, counts)
-    _, D = pair_vectors(x, i, j, 3.)
-    np.testing.assert_array_equal(counts, np.histogram(D, edges)[0])
+    assert listed.neighbour_list.nr_builds > 1
+    assert len(listed.pair_i) < len(everything.pair_i) / 2

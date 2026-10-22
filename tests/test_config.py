@@ -1,63 +1,39 @@
-from pathlib import Path
-
 import pytest
 
-from mdsim.cli import main
-from mdsim.config import Config, load_config
-
-ROOT = Path(__file__).resolve().parents[1]
+from jostle.config import Config
+from jostle.simulation import run_folder
 
 
-def test_default_config_file_matches_built_in_defaults():
-    config = load_config(ROOT / "configs" / "default.toml")
-    defaults = Config()
-    assert config.output_dir.resolve() == (ROOT / "trajectories").resolve()
-    for name in ("weights", "boxsize", "dt", "end_time", "save_steps",
-                 "method", "r_cutoff_scalar", "f_threshold",
-                 "r_threshold_scalar", "bonds_of_interest",
-                 "pairs_of_interest", "RDF_dr", "seed"):
-        assert getattr(config, name) == getattr(defaults, name), name
-
-
-def test_f_threshold_replaces_default_cutoff(tmp_path):
-    path = tmp_path / "c.toml"
-    path.write_text("[lennard_jones]\nf_threshold = 0.05\n")
-    config = load_config(path)
-    assert config.f_threshold == 0.05 and config.r_cutoff_scalar is None
-
-
-def test_unknown_setting_is_rejected(tmp_path):
-    path = tmp_path / "c.toml"
-    path.write_text("[integration]\ndtt = 0.001\n")
-    with pytest.raises(ValueError, match="dtt"):
-        load_config(path)
+def test_settings_by_name_go_to_their_group():
+    config = Config(dt=0.001, box_length=3.0, rdf_pairs=[], seed=2)
+    assert config.numerics.dt == 0.001 and config.system.box_length == 3.0
+    assert config.recording.rdf_pairs == [] and config.seed == 2
+    with pytest.raises(TypeError, match="Unknown setting"):
+        Config(nonexistent=0.1)
 
 
 @pytest.mark.parametrize("changes, message", [
     (dict(weights={"Water": -1}), "weights"),
     (dict(weights={"Unobtainium": 1}), "does not exist"),
-    (dict(method="leapfrog"), "method"),
-    (dict(save_steps=0), "save_steps"),
+    (dict(integrator="leapfrog"), "integrator"),
     (dict(dt=0), "dt"),
-    (dict(f_threshold=0.1), "Exactly one"),
-    (dict(r_cutoff_scalar=None), "Exactly one"),
-    (dict(RDF_thin=0), "RDF_thin"),
-    (dict(temp_control=1), "boolean"),
+    (dict(end_time=0), "end_time"),
+    (dict(box_length=1.5), "half the box length"),
+    (dict(rdf_pairs=["O-O Water"]), "Cannot parse"),
 ])
 def test_validation(changes, message):
     with pytest.raises((ValueError, FileNotFoundError), match=message):
         Config(**changes).validate()
 
 
-def test_cli_runs_with_overrides(tmp_path, capsys):
-    path = tmp_path / "c.toml"
-    path.write_text(
-        "[system]\nboxsize = 1.5\n"
-        "[integration]\nend_time = 0.004\nsave_steps = 2\n"
-        "[output]\ndirectory = 'out'\n"
-        "[plots]\nenergy = false\ntemperature = false\nphase_space = false\n"
-        "computation_time = false\nrdf = false\n")
-    main(["-c", str(path), "-w", "Water=1", "--seed", "1", "--no-show"])
-    assert "Results written to" in capsys.readouterr().out
-    (folder,) = (tmp_path / "out").iterdir()
-    assert folder.name.endswith("__1.0Water")
+def test_run_folder_is_unique_per_config():
+    # Equal settings share a folder (a rerun overwrites); any other setting,
+    # including the seed or a recording setting, gets its own
+    base = Config(box_length=2, seed=1, output_dir="a")
+    assert run_folder(base).name == run_folder(
+        Config(box_length=2.0, seed=1, output_dir="a")).name
+    assert run_folder(base).parent.name == "a"
+    others = [base.replace(seed=2), base.replace(rdf_bin_width=0.01),
+              base.replace(dt=0.0001)]
+    names = {run_folder(c).name for c in [base, *others]}
+    assert len(names) == 4

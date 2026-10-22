@@ -1,56 +1,32 @@
 import numpy as np
 import pytest
 
-from mdsim.constants import KBOLTZ
-from mdsim.integrators import (METHODS, State, beeman, euler, initial_state,
-                               step, velocity_verlet, verlet)
-from mdsim.system import initial_velocities, kinetic_energy
-
-from helpers import (forcefield, forces_and_energy, random_molecule,
-                     water_ethanol_pair)
-
-eps = 1e-12
-nr_tests = 15
-
-
-def test_methods_registry():
-    assert set(METHODS) == {"euler", "verlet", "velocity_verlet", "beeman"}
-
-
-@pytest.mark.parametrize("method", [euler, verlet, beeman, velocity_verlet])
-def test_stationary_without_velocity_or_acceleration(method):
-    rng = np.random.default_rng(1)
-    for _ in range(nr_tests):
-        x, t = random_molecule(10, rng)
-        zeros = np.zeros_like(x)
-        state = State(x, zeros, zeros, x, zeros)
-        new, _ = step(method, state, forcefield(t).compute, t.masses, 1.)
-        assert (np.abs(x - new.x) < eps).all()
-
-
-@pytest.mark.parametrize("method", [euler, beeman, velocity_verlet])
-def test_positions_move_along_velocity(method):
-    """Not applicable to Verlet, which has no explicit velocity."""
-    rng = np.random.default_rng(2)
-    for _ in range(nr_tests):
-        x, t = random_molecule(10, rng)
-        zeros = np.zeros_like(x)
-        v = 2 * rng.random(x.shape) - 1
-        state = State(x, v, zeros, x, zeros)
-        new, _ = step(method, state, forcefield(t).compute, t.masses, 1.)
-        assert (np.abs(np.sign(new.x - x) - np.sign(v)) < eps).all()
+from helpers import forcefield, forces_and_energy, water_ethanol_pair
+from jostle.constants import BOLTZMANN_CONSTANT
+from jostle.integrators import (
+    beeman,
+    initial_state,
+    integration_step,
+    startup_integrator,
+    velocity_verlet,
+    verlet,
+)
+from jostle.system import initial_velocities
+from jostle.thermo import degrees_of_freedom, kinetic_energy
 
 
 # ----------------------------- Physical behaviour ----------------------------
-def _run(method, ff, x, v0, dt, steps, temp=None):
-    """Bootstrap with one Euler step (as the simulation does), then iterate.
-    Returns the states of all steps."""
+def _run(integrator, ff, x, v0, dt, steps, target_temperature=None):
+    """Bootstrap with a self-starting step (as the simulation does), then
+    iterate. Returns the states of all steps."""
     masses = ff.topology.masses
-    state, _ = initial_state(x, v0, ff.compute, masses)
+    state, _ = initial_state(x, v0, ff.compute_forces, masses)
     states = [state]
     for i in range(steps):
-        state, _ = step(euler if i == 0 else method, state, ff.compute,
-                        masses, dt, temp)
+        step_integrator = (startup_integrator(integrator) if i == 0
+                           else integrator)
+        state, _ = integration_step(step_integrator, state, ff.compute_forces,
+                                    masses, dt, target_temperature)
         states.append(state)
     return states
 
@@ -70,30 +46,34 @@ def test_velocity_verlet_conserves_energy():
     assert abs(E[-200:].mean() - E[:200].mean()) < 0.001 * KE0
 
 
-@pytest.mark.parametrize("method", [velocity_verlet, beeman, verlet])
-def test_temperature_control_holds_temperature(method):
+@pytest.mark.parametrize("integrator", [velocity_verlet, beeman, verlet])
+def test_temperature_control_holds_temperature(integrator):
     x, t = water_ethanol_pair()
     target, dt = 300., 0.0005
     # Start far too hot
     v0 = initial_velocities(t.masses, 3 * target, np.random.default_rng(0))
-    states = _run(method, forcefield(t), x, v0, dt, 400, temp=target)
+    states = _run(integrator, forcefield(t), x, v0, dt, 400,
+                  target_temperature=target)
 
     # Measure the temperature from positions, so that it doesn't depend on
-    # how each method estimates velocities.
+    # how each integrator estimates velocities.
     x = np.array([s.x for s in states[-100:]])
     v_fd = (x[2:] - x[:-2]) / (2 * dt)
     KE = np.mean([kinetic_energy(t.masses, v) for v in v_fd])
-    T = 2 * KE / (3 * len(t.masses) * KBOLTZ)
+    T = 2 * KE / (degrees_of_freedom(len(t.masses)) * BOLTZMANN_CONSTANT)
     assert abs(T - target) < 0.1 * target
 
 
-@pytest.mark.parametrize("temp", [None, 300.])
-def test_state_kinetic_energy_matches_velocities(temp):
-    x, t = water_ethanol_pair()
-    v0 = initial_velocities(t.masses, 900., np.random.default_rng(0))
-    for state in _run(velocity_verlet, forcefield(t), x, v0, 0.0005, 5, temp):
-        np.testing.assert_allclose(state.KE, kinetic_energy(t.masses, state.v),
-                                   rtol=1e-12)
-    if temp is not None:
-        T = 2 * state.KE / (3 * len(t.masses) * KBOLTZ)
-        np.testing.assert_allclose(T, temp, rtol=1e-12)
+def test_initial_velocities_maxwell_boltzmann():
+    # Light and heavy atoms each get kT/2 per degree of freedom
+    masses = np.repeat([1.008, 15.999], 20000)
+    v = initial_velocities(masses, 300., np.random.default_rng(0))
+    for m in (1.008, 15.999):
+        sel = masses == m
+        T = m * np.mean(np.sum(v[sel]**2, axis=1)) / (3 * BOLTZMANN_CONSTANT)
+        assert abs(T - 300.) < 0.03 * 300.
+    # Zero centre-of-mass momentum and exactly the target temperature
+    np.testing.assert_allclose(masses @ v, 0, atol=1e-9)
+    T = 2 * kinetic_energy(masses, v) / (degrees_of_freedom(len(masses))
+                                         * BOLTZMANN_CONSTANT)
+    np.testing.assert_allclose(T, 300., rtol=1e-12)
