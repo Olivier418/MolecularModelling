@@ -3,31 +3,34 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mdsim"
+name = "jostle"
 version = "0.2.0"
-description = "Molecular dynamics of small-molecule mixtures in a periodic box"
+description = "Justin's & Olivier's Simulator of Thermal Liquid Ensembles: molecular dynamics of small-molecule mixtures"
 readme = "README.md"
+authors = [{ name = "Olivier Meiler" }]
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.0",
     "scipy>=1.15",
     "numba>=0.60",
     "matplotlib>=3.8",
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
-
-[project.scripts]
-mdsim = "mdsim.cli:main"
+notebook = ["jupyterlab>=4", "ipykernel>=6"]
 
 [tool.setuptools.package-data]
-mdsim = ["data/molecules/*"]
+jostle = ["data/molecules/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-filterwarnings = ["ignore:FigureCanvasAgg is non-interactive"]
+# The test runs are tiny on purpose, which the pre-run checks warn about.
+filterwarnings = ["ignore:FigureCanvasAgg is non-interactive",
+                  "ignore:Proactor event loop:RuntimeWarning",
+                  "ignore::jostle.checks.JostleWarning"]
 
 [tool.ruff]
 line-length = 80
