@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/Banner.jpg" width="100%" alt="jostle banner">
+  <img src="docs/images/Banner_text.jpg" width="100%" alt="jostle banner">
 </p>
 
 # Jostle
@@ -114,5 +114,32 @@ Baumeier (February 2025):
 
 The code as submitted for the course is kept on the
 [`course-submission`](../../tree/course-submission) branch, and the report
-describes that version. Afterwards, Olivier reworked it into this
-version using agentic coding: bug fixes, tests, the `jostle` package, a neighbour list and compiled kernels, the notebook and the missing features.
+describes that version. Afterwards, Olivier reworked it into this version
+using agentic coding; see below.
+
+## Changes since the course submission
+
+The model is the same: the molecules, force field and integrators are those
+of the course version. What changed:
+
+- **Bug fixes.** Bonded atom pairs (such as the O–O bond of O₂) also got
+  Lennard-Jones forces; RDF labels could swap which atom belongs to which
+  molecule; the `.xyz` writer truncated numbers and gave frames the wrong
+  times; the thermostat did not work with Verlet; the RDF setup crashed on
+  NumPy 2.
+- **Speed.** Lennard-Jones pairs come from a Verlet neighbour list instead
+  of all N² pairs, and the inner loops are compiled with Numba: a 4 nm
+  water–ethanol box (8,400 atoms) went from 2.4 s to about 50 ms per step.
+- **Setup.** The soft start with capped forces is replaced by packing the
+  molecules as rigid bodies, so a run starts without overlaps and barely
+  heats up.
+- **Analysis.** The RDF confidence intervals use block averaging, as
+  successive frames are correlated (the course version treated them as
+  independent, so its intervals were too narrow). Phase-space diagrams use
+  the exact bond velocities instead of finite differences, recorded every
+  step over the last part of the run.
+- **Usability.** The scripts with `input()` prompts and settings spread over
+  `main.py` and `config.py` became the installable `jostle` package: one
+  validated `Config`, a seed for reproducible runs, pre-run warnings, a
+  `Results` object that can be reloaded later, and the notebook.
+- **Tests.** A more thorough pytest suite checks, among others, that every force is the gradient of its energy, that velocity Verlet conserves energy and that the thermostat holds the temperature.
