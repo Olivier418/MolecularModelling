@@ -9,8 +9,8 @@ from helpers import forcefield, make_topology, water_ethanol_pair
 from jostle.config import Config
 from jostle.constants import BUILTIN_MOLECULE_DIR
 from jostle.geometry import pair_vectors
+from jostle.minimise import minimise_energy, thermal_force
 from jostle.observables import RDF, PhaseSpace, accumulate_pair_histogram
-from jostle.packing import PACKING_TARGET
 from jostle.results import Results
 from jostle.simulation import run
 from jostle.system import Topology, build_initial_box, load_molecule
@@ -34,19 +34,17 @@ def test_build_initial_box_counts():
 @pytest.mark.parametrize("weights", [{"Water": 1, "Ethanol": 1},
                                      {"Water": 1, "Hydrogen": 1},
                                      {"Oxygen": 1}])
-def test_packing_separates_LJ_atoms_of_different_molecules(weights):
-    L = 2.0
+def test_minimisation_brings_forces_down_to_thermal_size(weights):
+    L, T = 2.0, 298.15
     t, x = build_initial_box(L, weights, BUILTIN_MOLECULE_DIR,
                              np.random.default_rng(2))
-    # All pairs of LJ atoms of different molecules
-    i, j = np.triu_indices(t.nr_atoms, 1)
-    keep = ((t.molecule_index[i] != t.molecule_index[j])
-            & (t.lj_epsilon[i] > 0) & (t.lj_epsilon[j] > 0))
-    i, j = i[keep], j[keep]
-    d = x[i] - x[j]
-    d -= L * np.floor(d / L + 0.5)
-    ratio = np.linalg.norm(d, axis=1) / (0.5 * (t.lj_sigma[i] + t.lj_sigma[j]))
-    assert ratio.min() >= PACKING_TARGET
+    ff = forcefield(t, L, 2.5)
+    x_min, _ = minimise_energy(x, ff, T)
+    energies = [sum(ff.compute_forces(y, True).potential_energies.values())
+                for y in (x, x_min)]
+    forces = ff.compute_forces(x_min).forces
+    assert energies[1] < energies[0]
+    assert np.linalg.norm(forces, axis=1).max() <= thermal_force(t, T)
 
 
 def _config(tmp_path, **kwargs):
@@ -125,6 +123,7 @@ def test_results_load_gives_the_same_data(full_run):
                                       getattr(results, name))
     for name, values in results.potential_energies.items():
         np.testing.assert_array_equal(loaded.potential_energies[name], values)
+    np.testing.assert_array_equal(loaded.lj_correction, results.lj_correction)
     np.testing.assert_array_equal(loaded.rdf.g_of_r(), results.rdf.g_of_r())
     np.testing.assert_array_equal(loaded.rdf.nr_pairs, results.rdf.nr_pairs)
     assert loaded.rdf.pair_labels == results.rdf.pair_labels

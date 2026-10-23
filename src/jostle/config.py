@@ -5,7 +5,7 @@ A Config holds three groups of settings plus run control:
 - numerics: how it is approximated (integrator, time step, LJ cutoff);
 - recording: what is measured during the run.
 Plotting is not configured here: Results makes figures on request. Numerical
-constants that need no tuning (packing, neighbour list skin, RDF confidence)
+constants that need no tuning (neighbour list skin, RDF confidence)
 are module constants next to the code that uses them.
 """
 from dataclasses import asdict, dataclass, field, fields
@@ -20,7 +20,8 @@ from .constants import BUILTIN_MOLECULE_DIR, MOLAR_VOLUMES
 class SystemSettings:
     """What is simulated. Units: nm, K."""
     # Relative amounts of each molecule; normalised, so any positive scale
-    # works. Built-in: Water, Ethanol, Oxygen, Hydrogen.
+    # works. Built-in: Water and Ethanol (plus Oxygen and Hydrogen, used as
+    # test molecules).
     weights: dict = field(default_factory=lambda: {"Water": 1.0,
                                                    "Ethanol": 1.0})
     # Edge length of the cubic periodic box (nm)
@@ -107,8 +108,7 @@ class RecordingSettings:
     # Bond types for the phase space diagrams: "<atom>-<atom> (<molecule>)".
     # An empty list records none.
     phase_space_bonds: list = field(default_factory=lambda: [
-        'O-H (Water)', 'O-H (Ethanol)', 'C-O (Ethanol)', 'C-H (Ethanol)',
-        'O-O (Oxygen)'])
+        'O-H (Water)', 'O-H (Ethanol)', 'C-O (Ethanol)', 'C-H (Ethanol)'])
     # The phase space is recorded every step (about 34 points per O-H
     # vibration at the default dt), but only over the last phase_space_window
     # ps of the run: the orbits repeat, so a short window shows them all.

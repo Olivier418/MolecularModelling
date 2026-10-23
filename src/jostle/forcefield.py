@@ -24,11 +24,14 @@ POTENTIAL_TERMS = ("Bond", "Angle", "LJ", "Dihedral")
 class ForceEvaluation:
     """Forces at a configuration, with the bond vectors computed on the way
     (reused by PhaseSpace). potential_energies maps each of POTENTIAL_TERMS
-    to its value if it was requested, else it is None."""
+    to its value if it was requested, else it is None. So is lj_correction:
+    the energy to add to the shifted-force LJ term to estimate that of the
+    full LJ potential (see ForceField.compute_forces)."""
     forces: np.ndarray
     bond_vectors: np.ndarray
     bond_lengths: np.ndarray
     potential_energies: dict | None
+    lj_correction: float | None = None
 
 
 # ------------------------------- Force terms ---------------------------------
@@ -110,14 +113,17 @@ def lj_kernel(positions, pair_i, pair_j, epsilon, sigma, r_cutoff,
               cutoff_energy, cutoff_force, box_length, compute_energy, forces):
     """Lennard-Jones: E = 4 eps ((sig/D)^12 - (sig/D)^6) for the pairs
     (pair_i, pair_j) within their cutoff, using the minimum image if
-    box_length != 0. Adds the forces to `forces` and returns the energy (0
-    unless compute_energy).
+    box_length != 0. Adds the forces to `forces` and returns the energy and
+    the shift correction (both 0 unless compute_energy).
     Shifted force: cutoff_energy and cutoff_force are the energy and force at
     the cutoff (0 for an infinite cutoff). The force is F(D) - cutoff_force
     and the energy E(D) - cutoff_energy + (D - r_cutoff) cutoff_force, so
-    both go to 0 at the cutoff."""
+    both go to 0 at the cutoff. The shift correction is what the shift took
+    off the energy: the sum of cutoff_energy - (D - r_cutoff) cutoff_force,
+    so energy + shift correction is the energy of the plain truncated LJ."""
     inv_box_length = 1. / box_length if box_length != 0. else 0.
     energy = 0.
+    shift_correction = 0.
     for k in range(len(pair_i)):
         a, b = pair_i[k], pair_j[k]
         dx = positions[a, 0] - positions[b, 0]
@@ -144,10 +150,12 @@ def lj_kernel(positions, pair_i, pair_j, epsilon, sigma, r_cutoff,
         forces[b, 2] -= f * dz
         if compute_energy:
             energy += 4 * epsilon[k] * (sr6**2 - sr6) - cutoff_energy[k]
+            shift_correction += cutoff_energy[k]
             # cutoff_force is 0 for an infinite cutoff (avoids inf * 0)
             if cutoff_force[k] != 0.:
                 energy += (D - r_cutoff[k]) * cutoff_force[k]
-    return energy
+                shift_correction -= (D - r_cutoff[k]) * cutoff_force[k]
+    return energy, shift_correction
 
 
 # ------------------------------- Force field ---------------------------------
@@ -188,6 +196,22 @@ class ForceField:
                                    * (2 * sr6_cutoff**2 - sr6_cutoff)
                                    / cutoff)
 
+        # Tail correction: the LJ energy beyond the cutoffs, assuming a
+        # uniform fluid there (g(r) = 1), summed over ordered type pairs:
+        # 2 pi / V sum_ab N_a N_b int_rc^inf r^2 E(r) dr
+        # = 8 pi / 3V sum_ab N_a N_b eps sig^3 ((sig/rc)^9 / 3 - (sig/rc)^3).
+        # Constant, as N and V are; 0 for an infinite cutoff or no box.
+        self.lj_tail_energy = 0.
+        if self.box_length != 0. and np.isfinite(lj_cutoff):
+            counts = np.bincount(self.atom_type, minlength=len(types))
+            sigma = np.where(has_shift, self.sigma_table, 0.)
+            sr3_cutoff = np.where(has_shift, sigma / cutoff, 0.)**3
+            self.lj_tail_energy = (
+                8 * np.pi / (3 * self.box_length**3)
+                * np.sum(counts[:, None] * counts[None, :]
+                         * self.epsilon_table * sigma**3
+                         * (sr3_cutoff**3 / 3 - sr3_cutoff)))
+
         max_cutoff = np.max(self.r_cutoff_table[interacting], initial=0.)
 
         self.neighbour_list = NeighbourList(top, box_length, max_cutoff, skin)
@@ -215,7 +239,10 @@ class ForceField:
 
     def compute_forces(self, positions, compute_energy=False):
         """Forces at the positions, and the potential energy per term if
-        compute_energy."""
+        compute_energy. Then lj_correction is the shift correction (see
+        lj_kernel) plus the tail correction: added to the LJ term, it
+        estimates the energy of the full LJ potential. The forces are those
+        of the shifted-force potential either way."""
         top = self.topology
         t0 = time.perf_counter()
         bond_vectors, bond_lengths = pair_vectors(
@@ -226,7 +253,7 @@ class ForceField:
         t2 = time.perf_counter()
 
         F = np.zeros((top.nr_atoms, 3))
-        lj_energy = lj_kernel(
+        lj_energy, shift_correction = lj_kernel(
             positions, self.pair_i, self.pair_j, self.pair_epsilon,
             self.pair_sigma, self.pair_cutoff, self.pair_cutoff_energy,
             self.pair_cutoff_force, self.box_length, compute_energy, F)
@@ -255,8 +282,10 @@ class ForceField:
                                             t4 - t3), strict=True):
             self.timings[label] += dt
 
-        energies = None
+        energies = lj_correction = None
         if compute_energy:
             energies = {name: lj_energy if name == "LJ" else terms[name][2]
                         for name in POTENTIAL_TERMS}
-        return ForceEvaluation(F, bond_vectors, bond_lengths, energies)
+            lj_correction = shift_correction + self.lj_tail_energy
+        return ForceEvaluation(F, bond_vectors, bond_lengths, energies,
+                               lj_correction)

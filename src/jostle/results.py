@@ -42,6 +42,10 @@ class Results:
     topology: Topology
     energy_times: np.ndarray     # time of each energy frame (ps)
     potential_energies: dict | None  # POTENTIAL_TERMS -> array (kJ/mol)
+    # Added to potential_energies["LJ"], estimates the energy of the full LJ
+    # potential (without cutoff and shift; kJ/mol), None like
+    # potential_energies
+    lj_correction: np.ndarray | None
     kinetic_energies: np.ndarray  # kinetic energy (kJ/mol)
     phase_space: PhaseSpace | None
     rdf: RDF | None
@@ -190,6 +194,7 @@ class Results:
             for name in POTENTIAL_TERMS:
                 arrays[f"potential_energies/{name}"] = (
                     self.potential_energies[name])
+            arrays["lj_correction"] = self.lj_correction
         if self.phase_space is not None:
             phase_space = self.phase_space
             arrays["phase_space/bond_types"] = np.array(
@@ -226,11 +231,12 @@ class Results:
             data = dict(file)
         topology = Topology(**{f.name: data[f"topology/{f.name}"]
                                for f in fields(Topology)})
-        potential_energies = phase_space = rdf = None
+        potential_energies = lj_correction = phase_space = rdf = None
         if "potential_energies/Bond" in data:
             potential_energies = {
                 name: data[f"potential_energies/{name}"]
                 for name in POTENTIAL_TERMS}
+            lj_correction = data["lj_correction"]
         if "phase_space/bond_types" in data:
             bond_types = data["phase_space/bond_types"]
             phase_space = PhaseSpace.from_arrays(
@@ -248,6 +254,7 @@ class Results:
             config=config, folder=folder, topology=topology,
             energy_times=data["energy_times"],
             potential_energies=potential_energies,
+            lj_correction=lj_correction,
             kinetic_energies=data["kinetic_energies"],
             phase_space=phase_space, rdf=rdf,
             timings=dict(zip(data["timing_labels"].tolist(),

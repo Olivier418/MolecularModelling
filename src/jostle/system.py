@@ -1,13 +1,12 @@
 """The simulated system: its topology and how the initial box is built."""
-import time
 from dataclasses import dataclass, fields
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .constants import AVOGADRO, BOLTZMANN_CONSTANT, MOLAR_VOLUMES
 from .molecule_files import read_itp, read_xyz
-from .packing import PACKING_TARGET, pack_molecules
 from .thermo import kinetic_energy, velocity_scale_factor
 
 
@@ -147,9 +146,9 @@ def build_initial_box(box_length, weights, molecule_dir, rng):
     """
     Creates the positions and topology of a box of given size, where each
     molecule in the weights dict is present with its associated weight.
-    Molecules start on random sites of a cubic grid with random orientations,
-    and are then packed (moved and rotated as rigid bodies) until no LJ atoms
-    of different molecules are closer than PACKING_TARGET * sigma_ij.
+    Molecules sit on random sites of a cubic grid with random orientations,
+    so LJ atoms of neighbouring molecules may overlap: run() removes this
+    with minimise_energy.
     """
     counts = molecule_counts(box_length, weights)
     molecules, nr_per_type = list(counts), np.array(list(counts.values()))
@@ -179,14 +178,12 @@ def build_initial_box(box_length, weights, molecule_dir, rng):
     for name, count in zip(molecules, nr_per_type, strict=True):
         print(f"    {name}: {count / nr_molecules:.3f}")
 
-    # Remove the overlaps between LJ atoms of different molecules
-    start = time.perf_counter()
-    positions, iterations = pack_molecules(
-        local_positions, topology, box_length / grid_size * sites, box_length,
-        rng)
-    print(f"  Packed in {iterations} iterations "
-          f"({time.perf_counter() - start:.1f} s): no LJ atoms of different "
-          f"molecules closer than {PACKING_TARGET} sigma.")
+    # Uniformly distributed rotations (normalised Gaussian quaternions)
+    centres = box_length / grid_size * sites
+    rotations = Rotation.from_quat(rng.normal(size=(nr_molecules, 4)))
+    molecule_index = topology.molecule_index
+    positions = (rotations[molecule_index].apply(local_positions)
+                 + centres[molecule_index])
     return topology, positions
 
 

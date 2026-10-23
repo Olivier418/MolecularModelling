@@ -17,6 +17,7 @@ from .integrators import (
     integration_step,
     startup_integrator,
 )
+from .minimise import minimise_energy, thermal_force
 from .molecule_files import write_xyz
 from .observables import RDF, PhaseSpace
 from .results import Results
@@ -84,6 +85,15 @@ def run(config):
     print("Creating initial configuration...")
     topology, x = build_initial_box(box_length, system.weights,
                                system.molecule_dir, rng)
+    # Its own force field, so the timings below cover the integration only
+    start = time.perf_counter()
+    x, iterations = minimise_energy(
+        x, ForceField(topology, box_length, config.numerics.lj_cutoff),
+        system.temperature)
+    print(f"  Minimised the energy in {iterations} iterations "
+          f"({time.perf_counter() - start:.1f} s): largest force below "
+          f"{thermal_force(topology, system.temperature):.0f} kJ/mol/nm, "
+          f"the thermal force of the stiffest bond.")
     masses = topology.masses
     forcefield = ForceField(topology, box_length, config.numerics.lj_cutoff)
     folder = run_folder(config)
@@ -97,10 +107,11 @@ def run(config):
     def frame_times(interval):
         return dt * interval * np.arange(1 + nr_steps // interval)
     times = frame_times(energy_interval)
-    potential_energies = phase_space = rdf = None
+    potential_energies = lj_correction = phase_space = rdf = None
     if recording.record_potential_energies:
         potential_energies = {name: np.empty(len(times))
                               for name in POTENTIAL_TERMS}
+        lj_correction = np.empty(len(times))
     kinetic_energies = np.empty(len(times))
 
     # Energies are computed alongside the forces, on energy steps only
@@ -137,6 +148,7 @@ def run(config):
             if potential_energies is not None:
                 for name, value in result.potential_energies.items():
                     potential_energies[name][i // energy_interval] = value
+                lj_correction[i // energy_interval] = result.lj_correction
             kinetic_energies[i // energy_interval] = state.kinetic_energy
         # The positions are saved after projecting them into the box.
         if i % recording.trajectory_interval == 0:
@@ -173,6 +185,7 @@ def run(config):
     results = Results(
         config=config, folder=folder, topology=topology,
         energy_times=times, potential_energies=potential_energies,
+        lj_correction=lj_correction,
         kinetic_energies=kinetic_energies, phase_space=phase_space, rdf=rdf,
         timings={**forcefield.timings, **timings}, wall_time=wall_time)
     results.save()

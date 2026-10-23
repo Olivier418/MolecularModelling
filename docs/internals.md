@@ -14,8 +14,7 @@ and the design decisions behind it.
 - [8. Code organisation](#8-code-organisation)
 - [9. Implementation details](#9-implementation-details)
 - [10. Performance](#10-performance)
-- [11. Known issues and limitations](#11-known-issues-and-limitations)
-- [12. Development](#12-development)
+- [11. Development](#11-development)
 
 ## 1. A run, step by step
 
@@ -26,14 +25,13 @@ and the design decisions behind it.
    `trajectory.xyz` and `results.npz`, and warn about settings that are valid
    but would waste the run ([section 3](#3-pre-run-checks-and-warnings)).
 3. **Build** the box: molecules on random grid sites with random orientations,
-   then **pack** them to remove overlaps, then draw Maxwell–Boltzmann
-   velocities.
+   then **minimise** the energy to remove overlaps, then draw
+   Maxwell–Boltzmann velocities.
 4. **Integrate**, recording each measurement at its own interval, and writing
    trajectory frames as it goes.
 5. Collect everything in a `Results`, **save** it (`results.npz` +
    `config.json`) and return it.
 
-`run` makes **no figures**: they come from the `Results` methods, on request.
 
 ## 2. Configuration
 
@@ -70,7 +68,7 @@ in `Config`.
 | `weights` | `{"Water": 1, "Ethanol": 1}` | Relative amount of each molecule (normalised). |
 | `box_length` | `4.0` | Edge length of the cubic box (nm). |
 | `temperature` | `298.15` | Initial (and target) temperature (K). Starting velocities are Maxwell–Boltzmann with zero centre-of-mass momentum (3N−3 degrees of freedom). |
-| `thermostat` | `True` | Rescale the velocities to `temperature` every step (NVT); `False` gives NVE. |
+| `thermostat` | `True` | Rescale the velocities to `temperature` every step. This samples at constant number of molecules, volume and temperature (NVT, the canonical ensemble, here only approximately; see [Integration](#integration)). `False` lets the system evolve freely at constant number, volume and total energy (NVE, the microcanonical ensemble). |
 | `molecule_dir` | built-in | Folder with `<Name>.xyz` and `<Name>.itp` files. |
 | **`numerics`** | | |
 | `integrator` | `"velocity_verlet"` | `euler`, `verlet`, `velocity_verlet` or `beeman`. |
@@ -80,8 +78,8 @@ in `Config`.
 | `energy_interval` | `20` | Record the energies, kinetic energy and temperature every this many steps (5 fs at the default `dt`). |
 | `trajectory_interval` | `100` | Write a trajectory frame every this many steps (25 fs). The default run writes 400 frames, about 170 MB. |
 | `rdf_interval` | `100` | Record the RDF histograms every this many steps (25 fs: 40 frames per 1 ps block). Closer frames are nearly identical, so they cost time without improving g(r). |
-| `record_potential_energies` | `True` | Record the potential energy per term (costs a little time on energy steps). |
-| `phase_space_bonds` | water O–H, ethanol O–H, C–O, C–H, oxygen O–O | Bond types for the phase-space diagrams, as `"O-H (Water)"`. At most 100 bonds of each type are tracked, spread through the box. `[]` records none. |
+| `record_potential_energies` | `True` | Record the potential energy per term, and the LJ correction (costs a little time on energy steps). |
+| `phase_space_bonds` | water O–H, ethanol O–H, C–O, C–H | Bond types for the phase-space diagrams, as `"O-H (Water)"`. At most 100 bonds of each type are tracked, spread through the box. `[]` records none. |
 | `phase_space_window` | `1.0` | The phase space is recorded every step (about 34 points per O–H vibration of 8.6 fs), but only over the last `phase_space_window` ps of the run: the orbits repeat, so a short window shows them all, and the data stays small (at most about 30 MB) whatever the run length. `None` records the whole run. |
 | `rdf_pairs` | six O~H and O~O pairs | Pairs for the RDF, as `"O~H (Water~Ethanol)"`: an O atom in a water molecule with an H atom in an ethanol molecule. Only pairs in different molecules count. `[]` records none. |
 | `rdf_pair_fraction` | `1.0` | Fraction of the pairs to sample (0 < fraction ≤ 1). |
@@ -103,28 +101,21 @@ settings. Each is documented next to the code that uses it:
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `packing.PACKING_TARGET` | `0.85` | Closest allowed distance between LJ atoms of different molecules in the initial box, in σ. 0.9 jams liquid mixtures. |
-| `packing.PACKING_MARGIN` | `1.04` | How far beyond the target the packing penalty reaches (otherwise contacts approach the target only asymptotically). |
-| `packing.PACKING_MAX_ITERATIONS` | `20000` | Iteration limit of the packing. |
 | `neighbours.NEIGHBOUR_SKIN` | `0.1` nm | Extra neighbour-list distance. Affects speed only, not results. |
 | `plotting.RDF_CONFIDENCE` | `0.9` | Confidence level of the shaded RDF intervals. |
 | `plotting.RDF_BLOCK_TIME` | `1.0` ps | Only the default of the `block_time` keyword of `plot_rdf` and `animate_rdf` (see [RDF](#rdf)). |
 | `vmd.CUE_MODE`, `vmd.CUE_DENSITY` | `"Exp2"`, `0.4` | Depth cueing in VMD. |
 | `observables.PHASE_SPACE_MAX_BONDS` | `100` | Most bonds of each type tracked in the phase space. More only overlap in the diagram. |
-| thresholds in `checks.py` | | When the warnings below trigger. |
 
-There is no force threshold (`f_threshold` was removed: it is meaningless with
-a shifted-force potential).
 
 ## 3. Pre-run checks and warnings
 
 Before building the box, `run` calls `checks.check_config(config)`
 ([`checks.py`](../src/jostle/checks.py)). It always prints the expected size of
-`trajectory.xyz` and `results.npz`, and gives an `JostleWarning` for settings
+`trajectory.xyz` and `results.npz`, and gives a `JostleWarning` for settings
 that are valid but would waste the run or a measurement. `check_config(config)` can
 also be called on its own. The default settings give none (this is
-tested). There are deliberately no warnings for a small number of
-molecules, or for the liquid-like density of O₂/H₂.
+tested).
 
 | Warning | When |
 |---|---|
@@ -135,7 +126,7 @@ molecules, or for the liquid-like density of O₂/H₂.
 | RDF run too short | `end_time` shorter than two RDF blocks (2 ps), so no confidence interval. |
 | Phase space too short | `phase_space_window` shorter than one vibration of the slowest tracked bond. |
 | Large output | `trajectory.xyz` or `results.npz` above 1 GB. |
-| Likely typo | A `phase_space_bonds` or `rdf_pairs` entry for a molecule without files in `molecule_dir`, or for atoms or a bond that its molecule does not have. Entries for known molecules that are not in the mixture (like the default `"O-O (Oxygen)"`) are skipped silently. |
+| Likely typo | A `phase_space_bonds` or `rdf_pairs` entry for a molecule without files in `molecule_dir`, or for atoms or a bond that its molecule does not have. Entries for known molecules that are not in the mixture (like `"O-O (Oxygen)"` in a water–ethanol run) are skipped silently. |
 
 Bond periods come from `describe_molecule`: 2π/√(k_bond/μ) per bond type, with μ the
 reduced mass. `JostleWarning` uses the `"always"` filter, so each warning shows
@@ -152,7 +143,8 @@ off is `None`.
 | Attribute / method | Contents |
 |---|---|
 | `energy_times` | Time of each energy frame (ps), for `potential_energies`, `kinetic_energies` and `temperature`. |
-| `potential_energies` | Dict of the potential energy terms `"Bond"`, `"Angle"`, `"LJ"` and `"Dihedral"` (arrays, kJ/mol). |
+| `potential_energies` | Dict of the potential energy terms `"Bond"`, `"Angle"`, `"LJ"` and `"Dihedral"` (arrays, kJ/mol). `"LJ"` is the shifted-force energy that the dynamics conserve. |
+| `lj_correction` | Added to `potential_energies["LJ"]`, estimates the energy of the full LJ potential (kJ/mol; see [LJ energy correction](#lj-energy-correction)). Not part of the total energy. |
 | `temperature`, `kinetic_energies` | Temperature (K) and kinetic energy (kJ/mol). |
 | `rdf` | `rdf.times` (ps), `rdf.histograms` (raw counts, frames × pairs × bins), `rdf.bin_edges`, `rdf.pair_labels`, `rdf.nr_pairs` (sampled pairs per entry) and `rdf.g_of_r()` (the counts as g(r)). |
 | `phase_space` | `phase_space.times` (ps), `phase_space.lengths` and `.length_rates` (frames × bonds): bond lengths and their rates of change, per tracked bond type in `phase_space.bond_types`. |
@@ -167,8 +159,7 @@ off is `None`.
 | `view_in_vmd(vmd_path=None, show_periodic_images=True, show_box=True, show_image_outlines=True)` | Opens the trajectory in VMD, in its own window. |
 | `vmd_script` | The Tcl script `view_in_vmd()` wrote to the run folder. |
 
-**Figures are made on request, one at a time** (there is deliberately no
-save-all). Each `plot_*` method returns a matplotlib `Figure`, which a
+**Figures are made on request.** Each `plot_*` method returns a matplotlib `Figure`, which a
 notebook shows inline (the builders in `plotting.py` close it in pyplot right
 away, so it is shown once). It takes `save=False` (the default: don't save),
 `save=True` (save in the run folder, under the name in the table below) or
@@ -199,7 +190,7 @@ of the hash, so it does not depend on where the package is installed. Any
 
 | File | Written by | Contents |
 |---|---|---|
-| `trajectory.xyz` | `run` | Trajectory: frame 0 is the starting configuration (after packing), then one frame every `trajectory_interval` steps, with whole molecules wrapped into the box. |
+| `trajectory.xyz` | `run` | Trajectory: frame 0 is the starting configuration (after the energy minimisation), then one frame every `trajectory_interval` steps, with whole molecules wrapped into the box. |
 | `results.npz`, `config.json` | `run` | The recorded data and the settings, read by `Results.load`. The phase-space data takes most of the space. |
 | `energy.png` | `plot_energy(save=True)` | Bond, angle, LJ, dihedral, kinetic and total energy over time. |
 | `temperature.png` | `plot_temperature(save=True)` | Temperature over time. |
@@ -240,7 +231,7 @@ jostle looks for VMD in this order (`jostle.find_vmd()` shows the result):
 A path given in 1 or 2 is used as is: if it is wrong, nothing else is tried.
 To reopen a finished run without Python, run `vmd -e view_in_vmd.tcl` in its
 folder, or use *File > Load Visualization State* in VMD. Tested with VMD
-2.0.0a6 on Windows.
+2.0.0a6 on Windows 11.
 
 ## 6. Model
 
@@ -266,6 +257,32 @@ The potential energy is the sum of four terms
     1-4 pairs), for atoms with ε = 0, or for pairs where both σ = 0.
   - Distances use the minimum image convention.
 
+### LJ energy correction
+
+The dynamics use the shifted-force potential $E_\text{SF}$, but each energy
+frame also records `lj_correction`, so that `LJ + lj_correction` estimates
+the energy of the full LJ potential ([`forcefield.py`](../src/jostle/forcefield.py)).
+It has two parts:
+
+- **Shift** (exact, summed in `lj_kernel` over the pairs inside the cutoff):
+  $E(r) - E_\text{SF}(r) = E(r_c) - (r - r_c)F(r_c)$. Both terms are
+  negative: the attraction the shift took away.
+- **Tail** (analytic, `ForceField.lj_tail_energy`): the LJ energy beyond the
+  cutoffs, assuming a uniform fluid there ($g(r) = 1$). Summed over ordered
+  pairs of LJ atom types $a, b$ with counts $N_a$, $N_b$:
+
+  $$E_\text{tail} = \frac{2\pi}{V}\sum_{a,b} N_a N_b \int_{r_c}^{\infty} r^2 E_{ab}(r)\,\mathrm{d}r = \frac{8\pi}{3V}\sum_{a,b} N_a N_b\,\varepsilon_{ab}\sigma_{ab}^3\left[\tfrac13\left(\tfrac{\sigma_{ab}}{r_c}\right)^9 - \left(\tfrac{\sigma_{ab}}{r_c}\right)^3\right]$$
+
+  It is a constant, as $N$ and $V$ are, and 0 for an infinite cutoff or
+  without a box.
+
+In the notebook's 2 nm box the correction is about −900 kJ/mol (tail −274,
+shift about −630), a few kJ/mol per molecule. It changes only the reported
+energy: the forces stay those of the shifted-force potential (a uniform
+medium beyond the cutoff exerts no net force anyway), so the trajectory, RDFs
+and phase space are the same with or without it. Pressure is not computed, so
+there is no pressure tail correction.
+
 ### Integration
 
 Euler, Verlet, velocity Verlet or Beeman
@@ -290,14 +307,31 @@ $N_f = 3N - 3$ degrees of freedom.
   volume, the weights and the pure-component molar volumes in
   [`constants.py`](../src/jostle/constants.py). Molecules start on random
   sites of a cubic grid, with random orientations.
-- **Packing** ([`packing.py`](../src/jostle/packing.py)). Molecules are moved
-  and rotated as rigid bodies (Packmol-style steepest descent with an
-  adaptive step) to minimise an overlap penalty over intermolecular LJ atom
-  pairs, until no two are closer than 0.85σ. Only atoms with LJ count, so
-  atoms without it (such as water's H) may sit close to others. The packed
-  box needs no further energy minimisation: even without a thermostat it
-  barely heats up when the run starts. (The packing replaced an older soft
-  start with capped forces.)
+- **Energy minimisation** ([`minimise.py`](../src/jostle/minimise.py)).
+  On the grid, LJ atoms of neighbouring molecules can nearly coincide.
+  Steepest descent on the potential energy of the run's force field removes
+  these overlaps: every atom moves along its force, with an adaptive step
+  (a move is kept only if the energy drops). The bonded forces carry whole
+  molecules along, so they translate and rotate, deforming only slightly.
+- **Stop criterion.** The descent stops once the largest force on any atom
+  is below the thermal force of the stiffest bond,
+  $F_T = \sqrt{k_B T\,k_\text{bond}}$: about 1100 kJ/mol/nm at 298 K
+  (water's O–H). For a harmonic bond $E = \tfrac12 k x^2$, Boltzmann
+  statistics give $\langle x^2\rangle = k_B T/k$, so the force $F = -kx$
+  has $\langle F^2\rangle = k_B T\,k$: $F_T$ is its root mean square (rms).
+  This is the bond part of the exact identity
+  $\langle|\nabla U|^2\rangle = k_B T\,\langle\nabla^2 U\rangle$, which
+  defines the configurational temperature (Rugh 1997; Butler et al. 1998);
+  the bonds, the stiffest terms, dominate it. In the 298 K liquid the rms
+  atom force is indeed about 1100 kJ/mol/nm (largest about 3900). Stopping
+  on the largest force rather than the rms keeps any badly overlapping
+  atoms from surviving, at the cost of a slightly cold start. The criterion
+  sets the
+  scale, not the exact starting temperature. Without a thermostat (3 nm
+  mixture, 2 ps), stopping at $F_T$ dips briefly to about 180 K and settles
+  at about 295 K. Stopping at $10F_T$ leaves overlaps that heat the box to
+  about 950 K, and at $F_T/10$ the box stays near 190 K: with almost no
+  potential energy left, the kinetic energy is shared with the bonds.
 - **Starting velocities.** Maxwell–Boltzmann, with the centre-of-mass
   momentum removed, scaled to the initial temperature.
 
@@ -333,8 +367,9 @@ These are modelling choices, not bugs:
 
 - **No electrostatics.** There are no partial charges, so hydrogen bonding
   is essentially absent. Water's H atoms have no LJ either.
-- **LJ cutoff.** Beyond the cutoff, LJ is ignored, and there is no tail
-  correction. The shift slightly weakens the attraction inside it.
+- **LJ cutoff.** The forces are those of the shifted-force potential: zero
+  beyond the cutoff, and slightly less attractive inside it. Only the
+  reported energy is corrected for this ([LJ energy correction](#lj-energy-correction)).
 - **Thermostat.** Rescaling every step gives an isokinetic ensemble: the
   temperature does not fluctuate, so it is not canonical.
 - **RDF range.** g(r) only reaches half the box edge (the minimum image),
@@ -347,9 +382,12 @@ Each molecule needs three things:
 - a `<Name>.xyz` geometry;
 - a `<Name>.itp` force field, in the format below;
 - an entry in `MOLAR_VOLUMES` in [`constants.py`](../src/jostle/constants.py),
-  in cm³/mol. Water and ethanol are at 298.15 K. O₂ (28.0) and H₂ (28.5) are
-  the liquids at their boiling points, so the gases are packed at liquid
-  density.
+  in cm³/mol. Water and ethanol are at 298.15 K.
+
+jostle is built for water and ethanol. Oxygen and hydrogen are also shipped,
+as test molecules: O₂ is a molecule with only a bond (no angles), H₂ has very
+different LJ parameters. Their molar volumes, O₂ 28.0 and H₂ 28.5, are those
+of the liquids at their boiling points, so they are packed at liquid density.
 
 Built-in molecules live in
 [`src/jostle/data/molecules/`](../src/jostle/data/molecules). To add your own,
@@ -404,27 +442,28 @@ src/jostle/
                     positions, time) / read_itp → dict
   system.py         Topology dataclass (+ concatenate), load_molecule
                     (+ check_molecule), build_initial_box (random grid sites + random
-                    orientations, then packing), initial_velocities,
+                    orientations), initial_velocities,
                     molecule_counts (molecules per type, shared with checks)
   thermo.py         kinetic_energy, degrees_of_freedom (3N-3, also used by
                     Results.temperature), velocity_scale_factor
   checks.py         JostleWarning, describe_molecule (bond periods per type),
                     check_config(config): size estimate + warnings
-  packing.py        overlap_penalty, pack_molecules (draws the random
-                    orientations): rigid-body steepest descent on the overlap
-                    penalty
+  minimise.py       thermal_force (stop criterion), minimise_energy
+                    (steepest descent on the potential energy, before the run)
   geometry.py       pair_vectors (@njit, minimum image if box_length ≠ 0),
                     bond_index_map, angle_geometry, dihedral_geometry (one caller
                     each in forcefield), wrap_molecules, periodic_pairs
-                    (cKDTree, shared by neighbours and packing)
+                    (cKDTree, used by the neighbour list)
   forcefield.py     POTENTIAL_TERMS; bond/angle/dihedral_term → (atom indices,
                     force vectors, energy | None); lj_kernel (@njit, loops over
                     neighbour-list pairs); ForceField(topology, box_length,
                     lj_cutoff, skin=NEIGHBOUR_SKIN): LJ parameters, cutoffs
-                    and shifted-force cutoff_energy/cutoff_force per atom-type pair (tables);
+                    and shifted-force cutoff_energy/cutoff_force per atom-type pair (tables),
+                    lj_tail_energy;
                     .compute_forces(positions, compute_energy=False) →
                     ForceEvaluation(forces, bond_vectors, bond_lengths,
-                    potential_energies {POTENTIAL_TERMS} | None)
+                    potential_energies {POTENTIAL_TERMS} | None,
+                    lj_correction | None)
   neighbours.py     excluded_pair_keys, filter_lj_pairs, lj_pairs (all pairs),
                     NeighbourList (periodic cKDTree; refresh(positions))
   integrators.py    Integrator(update_positions, update_velocities) records: euler, verlet,
@@ -497,25 +536,20 @@ stream, so RDF settings don't change the trajectory.
 
 ## 10. Performance
 
-Measured on the default system, a 4 nm box of water and ethanol with 8,376
-atoms:
+Measured with the default settings (a 4 nm box of water and ethanol, 8,376
+atoms) on a desktop PC: AMD Ryzen 5 2600 (6 cores, 3.4 GHz; the code runs
+on a single core), 16 GB RAM, Windows 11, Python 3.14, NumPy 2.5, Numba 0.68.
 
 - **One time step:** about 62 ms with the default 2.5σ shifted-force cutoff
   (neighbour list ~22 ms, LJ ~26 ms, bonded ~11 ms), so about 40 minutes for
   the default 10 ps (40,000 steps). At 2σ: about 41 ms. The original
   all-pairs version took about 2.4 s per step.
-- **Packing:** about 5 s before the run starts (4 nm box). 0.9σ is near
-  jamming for the default mix: 320 s instead of 4.6 s at 0.85σ.
+- **Energy minimisation:** about 20 s (470 iterations) before the run
+  starts (4 nm box).
 
 Only about 3% of all atom pairs are visited each step.
 
-## 11. Known issues and limitations
-
-- **Dihedral forces** divide by the sine of the neighbouring bond angles, so
-  they become singular if a bond angle reaches 180°. The angle terms keep the
-  angles well away from that, so in practice it doesn't happen.
-
-## 12. Development
+## 11. Development
 
 ```bash
 pip install -e .[dev]       # pytest and friends
@@ -530,9 +564,11 @@ the `pythonpath`. To use the package without installing, put `src` on
 **Tests.**
 
 - They check that every force term equals minus the numerical gradient of its
-  energy, that velocity Verlet conserves energy, that the thermostat reaches
-  its target, that the neighbour list matches all-pairs LJ, and that results
-  are reproducible with a seed.
+  energy, that the LJ correction gives the full potential (with the tail
+  checked against numerical integration), that velocity Verlet conserves
+  energy, that the energy minimisation brings the forces down to thermal
+  size, that the thermostat reaches its target, that the neighbour list
+  matches all-pairs LJ, and that results are reproducible with a seed.
 - `tests/helpers.py` has `make_topology`, `forcefield`, `forces_and_energy`
   and `water_ethanol_pair`.
 - `test_simulation.py` shares two module-scoped runs (`full_run`, `bare_run`);
@@ -542,8 +578,11 @@ the `pythonpath`. To use the package without installing, put `src` on
 - The suite is kept to the essentials: physics, the run pipeline, saving and
   loading, and config validation. The notebook and VMD are not tested.
 
-**The notebook** is committed with its outputs cleared. To execute a copy:
-`jupyter nbconvert --to notebook --execute notebooks/jostle.ipynb --output-dir <tmp>`.
+**The notebook** is committed with its outputs (about 2 MB, mostly the RDF
+animation), so it can be read on GitHub without running it. Git keeps every
+committed version, so commit a re-executed notebook only when its results
+change. To re-execute it in place:
+`jupyter nbconvert --to notebook --execute --inplace notebooks/jostle.ipynb`.
 
 **Code conventions.**
 
@@ -551,5 +590,3 @@ the `pythonpath`. To use the package without installing, put `src` on
   wrapped at 80 characters.
 - snake_case, except physics arrays, which keep their original names.
 - Vectorised NumPy everywhere; hot loops in Numba.
-- Refactors keep results bit-identical unless a change is intended: check
-  this by comparing against the previous commit.

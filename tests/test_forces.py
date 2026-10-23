@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from scipy.integrate import quad
 
 from helpers import (
     forcefield,
@@ -17,6 +18,7 @@ from jostle.integrators import (
     integration_step,
     velocity_verlet,
 )
+from jostle.minimise import minimise_energy
 from jostle.neighbours import lj_pairs
 from jostle.system import build_initial_box, initial_velocities, load_molecule
 
@@ -98,6 +100,22 @@ def test_shifted_force(D):
     np.testing.assert_allclose(E_sf, expected[1], rtol=1e-9, atol=1e-9)
 
 
+def test_LJ_correction_gives_the_full_potential():
+    """The shifted-force LJ energy plus lj_correction is the full LJ energy
+    of a pair inside the cutoff, plus the tail beyond it for a uniform
+    fluid: 2 pi / V N^2 int_rc^inf r^2 E(r) dr (2 atoms of one type)."""
+    D, box_length = 0.4, 3.
+    t = make_topology(2, lj_epsilon=np.full(2, EPSILON_O),
+                      lj_sigma=np.full(2, SIGMA_O))
+    result = forcefield(t, box_length, lj_cutoff=2.5).compute_forces(
+        np.array([[0., 0., 0.], [D, 0., 0.]]), compute_energy=True)
+    tail = (2 * np.pi / box_length**3 * 2**2
+            * quad(lambda r: r**2 * _plain_LJ(r)[1], RC, np.inf)[0])
+    np.testing.assert_allclose(
+        result.potential_energies["LJ"] + result.lj_correction,
+        _plain_LJ(D)[1] + tail, rtol=1e-9)
+
+
 # ------------------------ Forces are -grad(energy) ---------------------------
 def _only(topology, term):
     """The topology with every force field term except `term` switched off."""
@@ -154,6 +172,7 @@ def test_neighbour_list_matches_all_pairs_over_a_run():
     t, x = build_initial_box(L, {"Water": 1, "Ethanol": 1},
                              BUILTIN_MOLECULE_DIR, rng)
     listed = ForceField(t, L, lj_cutoff=2.0, skin=0.05)
+    x, _ = minimise_energy(x, listed, 600.)
     # A skin reaching half the box makes the list hold all pairs
     everything = ForceField(t, L, lj_cutoff=2.0, skin=L)
     assert not listed.neighbour_list.holds_all_pairs
