@@ -83,6 +83,7 @@ settings that would waste it (a time step too large for the O–H vibration,
 too few frames, …). Each run gets its own folder under `trajectories/` with
 `trajectory.xyz`, `results.npz` and `config.json`.
 
+
 ## Documentation
 
 [**docs/internals.md**](docs/internals.md) is the full reference: every
